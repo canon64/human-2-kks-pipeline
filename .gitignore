@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.bak_*
+outputs/
+data/
+python/
+*.log
+config.json
+chrome_debug_data_*/
+venv/
+test_uc.py
+CODEBASE_STATE.md
