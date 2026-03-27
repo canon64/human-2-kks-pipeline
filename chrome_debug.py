@@ -5,6 +5,8 @@ Cloudflare/Bot検知を回避する
 import json
 import logging
 import os
+import re
+import subprocess
 import time
 
 log = logging.getLogger(__name__)
@@ -14,6 +16,112 @@ CHROME_USER_DATA = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
 
 # 起動中のdriver管理
 _uc_driver = None
+
+
+def _parse_major(version_text: str) -> int | None:
+    if not version_text:
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", version_text)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _read_chrome_version_from_registry() -> str:
+    try:
+        import winreg  # type: ignore
+    except Exception:
+        return ""
+
+    candidates = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon", "version"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Google\Chrome\BLBeacon", "version"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Google\Chrome\BLBeacon", "version"),
+    ]
+
+    for root, sub_key, value_name in candidates:
+        try:
+            with winreg.OpenKey(root, sub_key) as key:
+                value, _ = winreg.QueryValueEx(key, value_name)
+            if value:
+                return str(value)
+        except Exception:
+            continue
+
+    return ""
+
+
+def _read_chrome_version_from_exe() -> str:
+    candidates: list[str] = []
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local_app = os.environ.get("LOCALAPPDATA", "")
+
+    candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
+    candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
+    if local_app:
+        candidates.append(os.path.join(local_app, "Google", "Chrome", "Application", "chrome.exe"))
+
+    for exe_path in candidates:
+        if not os.path.exists(exe_path):
+            continue
+        try:
+            proc = subprocess.run(
+                [exe_path, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=5,
+                check=False,
+            )
+            text = (proc.stdout or proc.stderr or "").strip()
+            if text:
+                return text
+        except Exception:
+            continue
+
+    return ""
+
+
+def _detect_chrome_major() -> int | None:
+    reg_ver = _read_chrome_version_from_registry()
+    major = _parse_major(reg_ver)
+    if major is not None:
+        return major
+
+    exe_ver = _read_chrome_version_from_exe()
+    major = _parse_major(exe_ver)
+    if major is not None:
+        return major
+
+    return None
+
+
+def _extract_browser_major_from_error(err_text: str) -> int | None:
+    if not err_text:
+        return None
+    m = re.search(r"Current browser version is\s+(\d+)\.", err_text)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _launch_uc(uc_mod, options, user_data: str, port: int, version_main: int | None):
+    kwargs = {
+        "options": options,
+        "user_data_dir": user_data,
+        "port": port,
+    }
+    if version_main is not None:
+        kwargs["version_main"] = version_main
+    return uc_mod.Chrome(**kwargs)
 
 
 def get_profiles() -> list[dict]:
@@ -71,11 +179,26 @@ def get_profiles() -> list[dict]:
     return profiles
 
 
+def _sanitize_profile_dir(profile_dir: str) -> str:
+    value = (profile_dir or "").strip()
+    if not value:
+        return ""
+    if os.path.isabs(value):
+        raise ValueError("chrome_profileはディレクトリ名のみ指定してください（絶対パス不可）")
+    if "/" in value or "\\" in value:
+        raise ValueError("chrome_profileはディレクトリ名のみ指定してください（区切り文字不可）")
+    normalized = os.path.normpath(value)
+    if normalized in ("", ".", "..") or normalized.startswith(".."):
+        raise ValueError(f"無効なchrome_profileです: {value}")
+    return normalized
+
+
 def launch_chrome(
     port: int = 9222,
     headless: bool = False,
     extra_args: list[str] = None,
     data_dir: str = "",
+    profile_dir: str = "",
 ):
     """undetected-chromedriverでChromeを起動し、driverを返す
 
@@ -85,13 +208,31 @@ def launch_chrome(
     global _uc_driver
     import undetected_chromedriver as uc
 
+    selected_profile = _sanitize_profile_dir(profile_dir)
     if data_dir:
         user_data = data_dir
+        user_data_source = "custom"
+    elif selected_profile:
+        user_data = CHROME_USER_DATA
+        user_data_source = "system"
     else:
         user_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"chrome_debug_data_{port}")
+        user_data_source = "managed"
+
+    if user_data_source == "managed":
+        os.makedirs(user_data, exist_ok=True)
+    elif not os.path.isdir(user_data):
+        raise FileNotFoundError(f"user-data-dirが存在しません: {user_data}")
+
+    if selected_profile:
+        profile_path = os.path.join(user_data, selected_profile)
+        if not os.path.isdir(profile_path):
+            raise FileNotFoundError(
+                f"指定プロファイルが存在しません: {selected_profile} (user-data-dir={user_data})"
+            )
 
     # ロックファイル残存対策
-    if os.path.isdir(user_data):
+    if user_data_source == "managed":
         for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             lock_path = os.path.join(user_data, lock_name)
             if os.path.exists(lock_path):
@@ -103,6 +244,9 @@ def launch_chrome(
     options = uc.ChromeOptions()
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
+    options.add_argument(f"--user-data-dir={user_data}")
+    if selected_profile:
+        options.add_argument(f"--profile-directory={selected_profile}")
 
     if headless:
         options.add_argument("--headless=new")
@@ -111,13 +255,53 @@ def launch_chrome(
         for arg in extra_args:
             options.add_argument(arg)
 
-    log.info(f"Chrome起動 (undetected): port={port}")
+    detected_major = _detect_chrome_major()
+    profile_log = selected_profile or "(default)"
+    if detected_major is not None:
+        log.info(
+            "Chrome起動 (undetected): port=%s, chrome_major=%s, user_data_dir=%s, profile=%s, source=%s",
+            port,
+            detected_major,
+            user_data,
+            profile_log,
+            user_data_source,
+        )
+    else:
+        log.info(
+            "Chrome起動 (undetected): port=%s, chrome_major=auto, user_data_dir=%s, profile=%s, source=%s",
+            port,
+            user_data,
+            profile_log,
+            user_data_source,
+        )
 
-    _uc_driver = uc.Chrome(
-        options=options,
-        user_data_dir=user_data,
-        port=port,
-    )
+    try:
+        _uc_driver = _launch_uc(
+            uc_mod=uc,
+            options=options,
+            user_data=user_data,
+            port=port,
+            version_main=detected_major,
+        )
+    except Exception as first_exc:
+        # 版ズレ時はブラウザ側majorを例外文から拾って1回だけリトライする。
+        first_err = str(first_exc)
+        retry_major = _extract_browser_major_from_error(first_err)
+        if retry_major is not None and retry_major != detected_major:
+            log.warning(
+                "ChromeDriver版ズレ検知: detected=%s, retry=%s",
+                detected_major,
+                retry_major,
+            )
+            _uc_driver = _launch_uc(
+                uc_mod=uc,
+                options=options,
+                user_data=user_data,
+                port=port,
+                version_main=retry_major,
+            )
+        else:
+            raise
 
     return _uc_driver
 

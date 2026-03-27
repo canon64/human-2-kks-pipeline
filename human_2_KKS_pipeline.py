@@ -151,6 +151,11 @@ class AppConfig:
     external_text_endpoint: str
     external_text_token: str
     external_text_dedupe_max: int
+    # 保存設定（デフォルトは使ったら削除）
+    keep_input_wav: bool = False
+    keep_sbv2_audio: bool = False
+    keep_transcript_txt: bool = True
+    keep_sbv2_txt: bool = True
     # 転写サーバー
     transcribe_server_port: int = 18760
     # 動画メタデータ
@@ -554,10 +559,11 @@ class PipelineWorker(QObject):
                         self.log.emit(f"[pause] 破棄: {wav.name}")
                     elif self._source_mode() == "external":
                         self.log.emit(f"[source_mode] external: WAV無視 {wav.name}")
-                        try:
-                            wav.unlink(missing_ok=True)
-                        except Exception:
-                            pass
+                        if not self._cfg.keep_input_wav:
+                            try:
+                                wav.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                     else:
                         self._process_wav(wav)
                 except queue.Empty:
@@ -803,7 +809,8 @@ class PipelineWorker(QObject):
             if not text:
                 self.log.emit(f"[info] 変換後に空テキスト: {wav.name}")
                 return
-            _save_text(self._cfg.output_dir / "transcripts" / f"{wav.stem}.txt", text + "\n")
+            if self._cfg.keep_transcript_txt:
+                _save_text(self._cfg.output_dir / "transcripts" / f"{wav.stem}.txt", text + "\n")
 
             if self._paused:
                 self.log.emit(f"[pause] 破棄: {text[:40]}")
@@ -815,10 +822,11 @@ class PipelineWorker(QObject):
         except Exception as exc:
             self.log.emit(f"[error] {wav.name}: {exc}")
         finally:
-            try:
-                wav.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if not self._cfg.keep_input_wav:
+                try:
+                    wav.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def update_transcribe_conv(self, rules: list[dict]) -> None:
         with self._transcribe_conv_lock:
@@ -1142,12 +1150,45 @@ class PipelineWorker(QObject):
             if response_original:
                 delay = female_hold if female_hold else 0.0
                 self._schedule_response_text(response_original, self._cfg.main_index, delay)
-            # TTS出力フォルダを削除
-            merged_wav = p_json.get("merged_wav", "")
+            # 保存設定に応じて TTS 生成物を削除
+            merged_wav = str(p_json.get("merged_wav", "")).strip()
+            response_file = str(p_json.get("response_file", "")).strip()
+            line_wavs_raw = p_json.get("line_wavs", [])
+            line_wavs = line_wavs_raw if isinstance(line_wavs_raw, list) else []
+
+            run_dir: Optional[Path] = None
             if merged_wav:
                 run_dir = Path(merged_wav).parent
-                if run_dir.exists():
+            elif response_file:
+                run_dir = Path(response_file).parent
+
+            if not self._cfg.keep_sbv2_audio and not self._cfg.keep_sbv2_txt:
+                if run_dir and run_dir.exists():
                     shutil.rmtree(run_dir, ignore_errors=True)
+            else:
+                if not self._cfg.keep_sbv2_audio:
+                    for wav_path in [*line_wavs, merged_wav]:
+                        wav_path = str(wav_path).strip()
+                        if not wav_path:
+                            continue
+                        try:
+                            Path(wav_path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                if not self._cfg.keep_sbv2_txt and response_file:
+                    try:
+                        Path(response_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                if run_dir and run_dir.exists():
+                    try:
+                        parts_dir = run_dir / "parts"
+                        if parts_dir.exists() and not any(parts_dir.iterdir()):
+                            parts_dir.rmdir()
+                        if not any(run_dir.iterdir()):
+                            run_dir.rmdir()
+                    except Exception:
+                        pass
         except Exception as exc:
             self.log.emit(f"[error] pipeline {label}: {exc}")
 
@@ -1335,6 +1376,26 @@ class MainWindow(QMainWindow):
         out_btn = QPushButton("参照")
         out_btn.clicked.connect(lambda: self._pick_dir(self.output_dir_edit, "出力先"))
         form.addRow("出力先", self._hrow(self.output_dir_edit, out_btn))
+
+        save_audio_row = QHBoxLayout()
+        self.keep_input_wav_chk = QCheckBox("録音WAV保存")
+        self.keep_sbv2_audio_chk = QCheckBox("SBV2音声保存")
+        self.keep_input_wav_chk.setChecked(False)
+        self.keep_sbv2_audio_chk.setChecked(False)
+        save_audio_row.addWidget(self.keep_input_wav_chk)
+        save_audio_row.addWidget(self.keep_sbv2_audio_chk)
+        save_audio_w = QWidget(); save_audio_w.setLayout(save_audio_row)
+        form.addRow("保存(音声)", save_audio_w)
+
+        save_txt_row = QHBoxLayout()
+        self.keep_transcript_txt_chk = QCheckBox("転写txt保存")
+        self.keep_sbv2_txt_chk = QCheckBox("SBV2 txt保存")
+        self.keep_transcript_txt_chk.setChecked(True)
+        self.keep_sbv2_txt_chk.setChecked(True)
+        save_txt_row.addWidget(self.keep_transcript_txt_chk)
+        save_txt_row.addWidget(self.keep_sbv2_txt_chk)
+        save_txt_w = QWidget(); save_txt_w.setLayout(save_txt_row)
+        form.addRow("保存(txt)", save_txt_w)
 
         _local_py = str(Path(__file__).resolve().parent / "python" / "python.exe")
         self.faster_python_edit = QLineEdit(_local_py)
@@ -1660,6 +1721,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_chrome_profiles(self) -> None:
         self.chrome_profile_combo.clear()
+        self.chrome_profile_combo.addItem("(選択なし: 専用プロファイル)", "")
         try:
             from chrome_debug import get_profiles
             profiles = get_profiles()
@@ -1695,8 +1757,12 @@ class MainWindow(QMainWindow):
     def _do_chrome_launch(self) -> None:
         port = self.chrome_port_spin.value()
         headless = self.chrome_headless_chk.isChecked()
+        profile_dir = str(self.chrome_profile_combo.currentData() or "").strip()
         self.chrome_launch_btn.setEnabled(False)
-        self.chrome_status_label.setText("Chrome起動中...")
+        if profile_dir:
+            self.chrome_status_label.setText(f"Chrome起動中... profile={profile_dir}")
+        else:
+            self.chrome_status_label.setText("Chrome起動中... profile=(専用プロファイル)")
 
         def _task(**kwargs):
             from chrome_debug import launch_chrome, get_driver
@@ -1707,9 +1773,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             if already_running:
-                return "existing", get_driver(port=port)
+                status = "existing_profile_unverified" if profile_dir else "existing"
+                return status, get_driver(port=port)
             else:
-                driver = launch_chrome(port=port, headless=headless)
+                driver = launch_chrome(port=port, headless=headless, profile_dir=profile_dir)
                 return "launched", driver
 
         self._chrome_tab_worker = _SeleniumWorker(_task)
@@ -1724,6 +1791,8 @@ class MainWindow(QMainWindow):
         self.chrome_connect_btn.setEnabled(False)
         if self._find_grok_tab():
             pass  # ステータスは_find_grok_tab内で設定済み
+        elif status == "existing_profile_unverified":
+            self.chrome_status_label.setText("既存Chrome接続完了（選択プロファイル適用保証なし）")
         elif status == "existing":
             self.chrome_status_label.setText("既存Chrome接続完了（Grokタブなし）")
         else:
@@ -1876,6 +1945,10 @@ class MainWindow(QMainWindow):
         # パイプライン設定
         self.kks_root_edit.textChanged.connect(self._on_any_setting_changed)
         self.output_dir_edit.textChanged.connect(self._on_any_setting_changed)
+        self.keep_input_wav_chk.toggled.connect(self._on_any_setting_changed)
+        self.keep_sbv2_audio_chk.toggled.connect(self._on_any_setting_changed)
+        self.keep_transcript_txt_chk.toggled.connect(self._on_any_setting_changed)
+        self.keep_sbv2_txt_chk.toggled.connect(self._on_any_setting_changed)
         self.faster_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_model_edit.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_device_combo.currentTextChanged.connect(self._on_any_setting_changed)
@@ -1916,6 +1989,9 @@ class MainWindow(QMainWindow):
         self.external_text_endpoint_edit.textChanged.connect(self._on_any_setting_changed)
         self.external_text_token_edit.textChanged.connect(self._on_any_setting_changed)
         self.external_text_dedupe_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.chrome_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.chrome_headless_chk.toggled.connect(self._on_any_setting_changed)
+        self.chrome_profile_combo.currentIndexChanged.connect(self._on_any_setting_changed)
 
         # フィルター / 変換
         self.filter_edit.textChanged.connect(self._on_any_setting_changed)
@@ -1993,6 +2069,10 @@ class MainWindow(QMainWindow):
             external_text_endpoint=self.external_text_endpoint_edit.text().strip() or "/manual-text",
             external_text_token=self.external_text_token_edit.text().strip(),
             external_text_dedupe_max=int(self.external_text_dedupe_spin.value()),
+            keep_input_wav=bool(self.keep_input_wav_chk.isChecked()),
+            keep_sbv2_audio=bool(self.keep_sbv2_audio_chk.isChecked()),
+            keep_transcript_txt=bool(self.keep_transcript_txt_chk.isChecked()),
+            keep_sbv2_txt=bool(self.keep_sbv2_txt_chk.isChecked()),
             transcribe_server_port=int(
                 json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("transcribe_server_port", 18760)
                 if CONFIG_FILE.exists() else 18760
@@ -2043,6 +2123,10 @@ class MainWindow(QMainWindow):
             "external_text_endpoint": cfg.external_text_endpoint,
             "external_text_token": cfg.external_text_token,
             "external_text_dedupe_max": cfg.external_text_dedupe_max,
+            "keep_input_wav": cfg.keep_input_wav,
+            "keep_sbv2_audio": cfg.keep_sbv2_audio,
+            "keep_transcript_txt": cfg.keep_transcript_txt,
+            "keep_sbv2_txt": cfg.keep_sbv2_txt,
             "transcribe_server_port": cfg.transcribe_server_port,
             "sbv2_server_url": cfg.sbv2_server_url,
             "sbv2_server_auto_start": cfg.sbv2_server_auto_start,
@@ -2120,6 +2204,10 @@ class MainWindow(QMainWindow):
             self.external_text_endpoint_edit.setText(s("external_text_endpoint", self.external_text_endpoint_edit.text()))
             self.external_text_token_edit.setText(s("external_text_token", ""))
             self.external_text_dedupe_spin.setValue(i("external_text_dedupe_max", self.external_text_dedupe_spin.value()))
+            self.keep_input_wav_chk.setChecked(b("keep_input_wav", False))
+            self.keep_sbv2_audio_chk.setChecked(b("keep_sbv2_audio", False))
+            self.keep_transcript_txt_chk.setChecked(b("keep_transcript_txt", True))
+            self.keep_sbv2_txt_chk.setChecked(b("keep_sbv2_txt", True))
             # transcribe_server_port は UI 非公開、config.json のみで管理
             self.sbv2_server_url_edit.setText(s("sbv2_server_url", "http://127.0.0.1:5000"))
             self.sbv2_auto_start_chk.setChecked(b("sbv2_server_auto_start", True))
@@ -2271,7 +2359,12 @@ class MainWindow(QMainWindow):
         if self._chrome_driver is None:
             port = self.chrome_port_spin.value()
             headless = self.chrome_headless_chk.isChecked()
+            profile_dir = str(self.chrome_profile_combo.currentData() or "").strip()
             self._append_log("[selenium] バックグラウンドで起動中...")
+            if profile_dir:
+                self._append_log(f"[selenium] profile={profile_dir}")
+            else:
+                self._append_log("[selenium] profile=(専用プロファイル)")
             self._pending_cfg = cfg
 
             def _selenium_task(**kwargs):
@@ -2283,9 +2376,10 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
                 if already_running:
-                    return "existing", get_driver(port=port)
+                    status = "existing_profile_unverified" if profile_dir else "existing"
+                    return status, get_driver(port=port)
                 else:
-                    driver = launch_chrome(port=port, headless=headless)
+                    driver = launch_chrome(port=port, headless=headless, profile_dir=profile_dir)
                     return "launched", driver
 
             self._selenium_worker = _SeleniumWorker(_selenium_task)
@@ -2299,6 +2393,8 @@ class MainWindow(QMainWindow):
     def _on_selenium_worker_done(self, status, driver) -> None:
         if driver:
             self._chrome_driver = driver
+            if status == "existing_profile_unverified":
+                self._append_log("[selenium] 既存デバッグChromeへ接続（選択プロファイルの適用保証なし）")
             if self._find_grok_tab():
                 self._append_log("[selenium] Grokタブ検出")
             else:
