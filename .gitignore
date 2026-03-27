@@ -10,3 +10,4 @@ chrome_debug_data_*/
 venv/
 test_uc.py
 CODEBASE_STATE.md
+*.ps1
