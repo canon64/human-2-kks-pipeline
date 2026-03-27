@@ -36,10 +36,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-SCRIPT_ROOT = Path(__file__).resolve().parent
-LEGACY_CONFIG_FILE = SCRIPT_ROOT / "config.json"
-CONFIG_DIR = Path(os.environ.get("APPDATA") or SCRIPT_ROOT) / "human_2_KKS_pipeline"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DEFAULT_SOURCE_MODE = "both"
 
 
@@ -80,18 +77,6 @@ def _save_text(path: Path, text: str) -> None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         path = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
     path.write_text(text, encoding="utf-8")
-
-
-def _ensure_shared_config_file() -> None:
-    """全コピーで共通設定を使うため、APPDATA配下のconfigを初期化/移行する。"""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if CONFIG_FILE.exists():
-        return
-    if LEGACY_CONFIG_FILE.exists():
-        try:
-            shutil.copy2(LEGACY_CONFIG_FILE, CONFIG_FILE)
-        except Exception:
-            pass
 
 
 def _acquire_single_instance(mutex_name: str) -> bool:
@@ -1259,7 +1244,6 @@ class MainWindow(QMainWindow):
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
         self._loading_config = False
-        _ensure_shared_config_file()
 
         self._build_ui()
         self._load_config()
@@ -2099,7 +2083,6 @@ class MainWindow(QMainWindow):
             cfg = self._build_config()
         except Exception:
             return
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = {
             "device_name": self.device_combo.currentText(),
             "wav_dir": str(cfg.wav_dir), "threshold_dbfs": cfg.threshold_dbfs,
@@ -2149,7 +2132,6 @@ class MainWindow(QMainWindow):
         CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_config(self) -> None:
-        _ensure_shared_config_file()
         if not CONFIG_FILE.exists():
             return
         try:
