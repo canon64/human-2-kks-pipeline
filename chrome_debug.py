@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+import urllib.request
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,62 @@ def _launch_uc(uc_mod, options, user_data: str, port: int, version_main: int | N
     if version_main is not None:
         kwargs["version_main"] = version_main
     return uc_mod.Chrome(**kwargs)
+
+
+def _is_debug_endpoint_ready(port: int, timeout_sec: float = 1.0) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout_sec) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _wait_debug_endpoint(port: int, timeout_sec: float = 12.0, interval_sec: float = 0.3) -> bool:
+    deadline = time.time() + max(0.5, timeout_sec)
+    while time.time() < deadline:
+        if _is_debug_endpoint_ready(port=port, timeout_sec=1.0):
+            return True
+        time.sleep(interval_sec)
+    return False
+
+
+def _find_chrome_exe() -> str:
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
+    ]
+    if local_app:
+        candidates.append(os.path.join(local_app, "Google", "Chrome", "Application", "chrome.exe"))
+    for exe_path in candidates:
+        if os.path.isfile(exe_path):
+            return exe_path
+    raise FileNotFoundError("chrome.exe が見つかりません")
+
+
+def _spawn_debug_chrome(port: int, user_data: str, profile_dir: str, headless: bool) -> None:
+    chrome_exe = _find_chrome_exe()
+    cmd = [
+        chrome_exe,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-debugging-host=127.0.0.1",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data}",
+    ]
+    if profile_dir:
+        cmd.append(f"--profile-directory={profile_dir}")
+    if headless:
+        cmd.append("--headless=new")
+    subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=0x00000008,  # CREATE_NO_WINDOW
+    )
 
 
 def get_profiles() -> list[dict]:
@@ -301,7 +358,22 @@ def launch_chrome(
                 version_main=retry_major,
             )
         else:
-            raise
+            first_err = str(first_exc)
+            # Chrome自体は起動してもdebug endpointが開かないケースを自動回復。
+            # "cannot connect to chrome" のときだけ専用の再起動接続を試す。
+            if "cannot connect to chrome" in first_err.lower() and not _is_debug_endpoint_ready(port=port):
+                log.warning("debug endpoint未到達。再起動回復を試行します: port=%s", port)
+                _spawn_debug_chrome(
+                    port=port,
+                    user_data=user_data,
+                    profile_dir=selected_profile,
+                    headless=headless,
+                )
+                if not _wait_debug_endpoint(port=port, timeout_sec=15.0):
+                    raise RuntimeError(f"Chrome debug endpointが開きません: 127.0.0.1:{port}") from first_exc
+                _uc_driver = get_driver(port=port)
+            else:
+                raise
 
     return _uc_driver
 

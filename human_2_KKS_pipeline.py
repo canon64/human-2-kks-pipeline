@@ -2409,7 +2409,15 @@ class MainWindow(QMainWindow):
 
     def _on_selenium_worker_error(self, err) -> None:
         self._append_log(f"[selenium] 起動失敗: {err}")
-        self._continue_start_pipeline(self._pending_cfg)
+        self._append_log("[selenium] 失敗のため開始を中止しました。ポート/プロファイルを確認してください。")
+        self._running = False
+        self._paused = False
+        self.start_btn.setText("▶ 開始")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("⏸ 一時停止")
+        self.chrome_launch_btn.setEnabled(True)
+        self.chrome_close_btn.setEnabled(False)
+        self.chrome_test_btn.setEnabled(False)
 
     def _continue_start_pipeline(self, cfg: "AppConfig") -> None:
         # パイプライン起動
