@@ -1,21 +1,23 @@
+﻿"""
+Chrome launch helpers for Selenium debug attachment.
 """
-undetected-chromedriverでChromeを起動し、Seleniumで操作する
-Cloudflare/Bot検知を回避する
-"""
+
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.request
 
+
 log = logging.getLogger(__name__)
 
-# Chrome関連のパス
+# Default Chrome user-data root (system profile source)
 CHROME_USER_DATA = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
 
-# 起動中のdriver管理
+# Keep a singleton UC driver in-process
 _uc_driver = None
 
 
@@ -155,7 +157,7 @@ def _find_chrome_exe() -> str:
     for exe_path in candidates:
         if os.path.isfile(exe_path):
             return exe_path
-    raise FileNotFoundError("chrome.exe が見つかりません")
+    raise FileNotFoundError("chrome.exe not found")
 
 
 def _spawn_debug_chrome(port: int, user_data: str, profile_dir: str, headless: bool) -> None:
@@ -167,31 +169,32 @@ def _spawn_debug_chrome(port: int, user_data: str, profile_dir: str, headless: b
         "--remote-debugging-host=127.0.0.1",
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data}",
+        "about:blank",
     ]
     if profile_dir:
         cmd.append(f"--profile-directory={profile_dir}")
     if headless:
         cmd.append("--headless=new")
+
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
-        creationflags=0x00000008,  # CREATE_NO_WINDOW
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 
 def get_profiles() -> list[dict]:
-    """利用可能なChromeプロファイル一覧を取得する"""
-    profiles = []
+    """Return available system Chrome profiles with lightweight account hints."""
+    profiles: list[dict] = []
 
-    if not os.path.exists(CHROME_USER_DATA):
-        log.warning(f"Chrome User Dataが見つかりません: {CHROME_USER_DATA}")
+    if not os.path.isdir(CHROME_USER_DATA):
+        log.warning("Chrome User Data not found: %s", CHROME_USER_DATA)
         return profiles
 
     for item in os.listdir(CHROME_USER_DATA):
         item_path = os.path.join(CHROME_USER_DATA, item)
-
         if not os.path.isdir(item_path):
             continue
         if item != "Default" and not item.startswith("Profile "):
@@ -205,32 +208,30 @@ def get_profiles() -> list[dict]:
             with open(prefs_path, "r", encoding="utf-8") as f:
                 prefs = json.load(f)
 
-            account_info = prefs.get("account_info", [{}])
-            if account_info:
-                info = account_info[0]
-                email = info.get("email", "")
-                name = info.get("full_name", "")
-            else:
-                email = ""
-                name = ""
+            account_info = prefs.get("account_info") or []
+            first = account_info[0] if account_info and isinstance(account_info[0], dict) else {}
+            email = str(first.get("email", ""))
+            name = str(first.get("full_name", ""))
 
-            profiles.append({
-                "profile_dir": item,
-                "name": name,
-                "email": email,
-            })
+            profiles.append(
+                {
+                    "profile_dir": item,
+                    "name": name,
+                    "email": email,
+                }
+            )
         except Exception as e:
-            log.warning(f"プロファイル読み込み失敗: {item} - {e}")
+            log.warning("Profile read failed: %s - %s", item, e)
             continue
 
-    def sort_key(p):
+    def sort_key(p: dict) -> tuple[int, int | str]:
         if p["profile_dir"] == "Default":
             return (0, 0)
         try:
-            num = int(p["profile_dir"].replace("Profile ", ""))
+            num = int(str(p["profile_dir"]).replace("Profile ", ""))
             return (1, num)
         except Exception:
-            return (2, p["profile_dir"])
+            return (2, str(p["profile_dir"]))
 
     profiles.sort(key=sort_key)
     return profiles
@@ -241,13 +242,35 @@ def _sanitize_profile_dir(profile_dir: str) -> str:
     if not value:
         return ""
     if os.path.isabs(value):
-        raise ValueError("chrome_profileはディレクトリ名のみ指定してください（絶対パス不可）")
+        raise ValueError("chrome_profile must be a profile directory name, not an absolute path")
     if "/" in value or "\\" in value:
-        raise ValueError("chrome_profileはディレクトリ名のみ指定してください（区切り文字不可）")
+        raise ValueError("chrome_profile must not contain path separators")
     normalized = os.path.normpath(value)
     if normalized in ("", ".", "..") or normalized.startswith(".."):
-        raise ValueError(f"無効なchrome_profileです: {value}")
+        raise ValueError(f"invalid chrome_profile: {value}")
     return normalized
+
+
+def _sync_profile_to_managed_user_data(managed_user_data: str, profile_dir: str) -> None:
+    src_profile = os.path.join(CHROME_USER_DATA, profile_dir)
+    dst_profile = os.path.join(managed_user_data, profile_dir)
+    if os.path.isdir(dst_profile):
+        return
+    if not os.path.isdir(src_profile):
+        raise FileNotFoundError(
+            f"Requested profile does not exist: {profile_dir} (source={CHROME_USER_DATA})"
+        )
+
+    os.makedirs(managed_user_data, exist_ok=True)
+
+    src_local_state = os.path.join(CHROME_USER_DATA, "Local State")
+    dst_local_state = os.path.join(managed_user_data, "Local State")
+    if os.path.isfile(src_local_state) and not os.path.isfile(dst_local_state):
+        shutil.copy2(src_local_state, dst_local_state)
+
+    ignore = shutil.ignore_patterns("SingletonLock", "SingletonSocket", "SingletonCookie")
+    shutil.copytree(src_profile, dst_profile, dirs_exist_ok=True, ignore=ignore)
+    log.info("Chrome profile synced: %s -> %s", src_profile, dst_profile)
 
 
 def launch_chrome(
@@ -257,10 +280,11 @@ def launch_chrome(
     data_dir: str = "",
     profile_dir: str = "",
 ):
-    """undetected-chromedriverでChromeを起動し、driverを返す
+    """Launch Chrome via undetected_chromedriver and return a connected driver.
 
-    初回は空プロファイルで起動。grok.comに手動ログインすれば
-    Cookieがdata_dirに保存され、2回目以降は自動ログイン。
+    Note: for modern Chrome versions, remote debugging on the default system
+    user-data dir can be blocked. We therefore use a managed user-data dir by
+    default and optionally clone the selected system profile into it once.
     """
     global _uc_driver
     import undetected_chromedriver as uc
@@ -269,9 +293,6 @@ def launch_chrome(
     if data_dir:
         user_data = data_dir
         user_data_source = "custom"
-    elif selected_profile:
-        user_data = CHROME_USER_DATA
-        user_data_source = "system"
     else:
         user_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"chrome_debug_data_{port}")
         user_data_source = "managed"
@@ -279,16 +300,18 @@ def launch_chrome(
     if user_data_source == "managed":
         os.makedirs(user_data, exist_ok=True)
     elif not os.path.isdir(user_data):
-        raise FileNotFoundError(f"user-data-dirが存在しません: {user_data}")
+        raise FileNotFoundError(f"user-data-dir not found: {user_data}")
 
     if selected_profile:
+        if user_data_source == "managed":
+            _sync_profile_to_managed_user_data(user_data, selected_profile)
         profile_path = os.path.join(user_data, selected_profile)
         if not os.path.isdir(profile_path):
             raise FileNotFoundError(
-                f"指定プロファイルが存在しません: {selected_profile} (user-data-dir={user_data})"
+                f"Profile dir not found: {selected_profile} (user-data-dir={user_data})"
             )
 
-    # ロックファイル残存対策
+    # Remove stale locks in managed dir.
     if user_data_source == "managed":
         for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             lock_path = os.path.join(user_data, lock_name)
@@ -301,6 +324,8 @@ def launch_chrome(
     options = uc.ChromeOptions()
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
+    options.add_argument("--remote-debugging-host=127.0.0.1")
+    options.add_argument(f"--remote-debugging-port={port}")
     options.add_argument(f"--user-data-dir={user_data}")
     if selected_profile:
         options.add_argument(f"--profile-directory={selected_profile}")
@@ -316,7 +341,7 @@ def launch_chrome(
     profile_log = selected_profile or "(default)"
     if detected_major is not None:
         log.info(
-            "Chrome起動 (undetected): port=%s, chrome_major=%s, user_data_dir=%s, profile=%s, source=%s",
+            "Chrome launch (undetected): port=%s, chrome_major=%s, user_data_dir=%s, profile=%s, source=%s",
             port,
             detected_major,
             user_data,
@@ -325,7 +350,7 @@ def launch_chrome(
         )
     else:
         log.info(
-            "Chrome起動 (undetected): port=%s, chrome_major=auto, user_data_dir=%s, profile=%s, source=%s",
+            "Chrome launch (undetected): port=%s, chrome_major=auto, user_data_dir=%s, profile=%s, source=%s",
             port,
             user_data,
             profile_log,
@@ -341,12 +366,11 @@ def launch_chrome(
             version_main=detected_major,
         )
     except Exception as first_exc:
-        # 版ズレ時はブラウザ側majorを例外文から拾って1回だけリトライする。
         first_err = str(first_exc)
         retry_major = _extract_browser_major_from_error(first_err)
         if retry_major is not None and retry_major != detected_major:
             log.warning(
-                "ChromeDriver版ズレ検知: detected=%s, retry=%s",
+                "ChromeDriver major mismatch: detected=%s, retry=%s",
                 detected_major,
                 retry_major,
             )
@@ -358,11 +382,8 @@ def launch_chrome(
                 version_main=retry_major,
             )
         else:
-            first_err = str(first_exc)
-            # Chrome自体は起動してもdebug endpointが開かないケースを自動回復。
-            # "cannot connect to chrome" のときだけ専用の再起動接続を試す。
             if "cannot connect to chrome" in first_err.lower() and not _is_debug_endpoint_ready(port=port):
-                log.warning("debug endpoint未到達。再起動回復を試行します: port=%s", port)
+                log.warning("UC launch failed; trying direct chrome spawn once: port=%s", port)
                 _spawn_debug_chrome(
                     port=port,
                     user_data=user_data,
@@ -370,16 +391,19 @@ def launch_chrome(
                     headless=headless,
                 )
                 if not _wait_debug_endpoint(port=port, timeout_sec=15.0):
-                    raise RuntimeError(f"Chrome debug endpointが開きません: 127.0.0.1:{port}") from first_exc
+                    raise RuntimeError(
+                        f"Chrome debug endpoint unreachable: 127.0.0.1:{port} "
+                        f"(user_data_dir={user_data}, profile={selected_profile or '(default)'})"
+                    ) from first_exc
                 _uc_driver = get_driver(port=port)
-            else:
-                raise
+                return _uc_driver
+            raise
 
     return _uc_driver
 
 
 def get_driver(port: int = 9222, wait: float = 0):
-    """起動済みのdriverを返す"""
+    """Return existing driver if available, otherwise attach via debuggerAddress."""
     global _uc_driver
     if wait > 0:
         time.sleep(wait)
@@ -387,21 +411,21 @@ def get_driver(port: int = 9222, wait: float = 0):
     if _uc_driver:
         return _uc_driver
 
-    # フォールバック: 既存のデバッグChromeに通常seleniumで接続
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
+
     options = Options()
     options.add_experimental_option("debuggerAddress", f"127.0.0.1:{port}")
-    log.info(f"Selenium接続 (fallback): port={port}")
+    log.info("Selenium connect (fallback): port=%s", port)
     return webdriver.Chrome(options=options)
 
 
 def close_chrome():
-    """起動したChromeを終了する"""
+    """Close launched Chrome driver if present."""
     global _uc_driver
 
     if _uc_driver:
-        log.info("Chrome終了")
+        log.info("Chrome close")
         try:
             _uc_driver.quit()
         except Exception:

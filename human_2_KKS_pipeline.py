@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DEFAULT_SOURCE_MODE = "both"
+CHROME_DEBUG_PORT_FIXED = 9222
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +250,7 @@ class PipelineWorker(QObject):
         self._external_id_queue: deque[str] = deque()
         self._external_id_set: set[str] = set()
         self._external_lock = threading.Lock()
+        self._grok_debug_endpoint_blocked = False
         # song_kana_map / video_metadata
         _data_dir = Path(__file__).resolve().parent / "data"
         self._song_kana_map_path: Path = _data_dir / "song_kana_map.json"
@@ -648,6 +650,14 @@ class PipelineWorker(QObject):
             with self._proc_lock:
                 self._current_proc = None
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+    @staticmethod
+    def _is_chrome_debug_endpoint_ready(port: int, timeout_sec: float = 1.2) -> bool:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout_sec) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
 
     def _resolve_scripts(self) -> tuple[Path, Path]:
         # ローカル同梱スクリプトを優先、なければ従来のkks_rootパスにフォールバック
@@ -1075,6 +1085,12 @@ class PipelineWorker(QObject):
         threading.Thread(target=_send, daemon=True).start()
 
     def _process_text(self, text: str, wav: Optional[Path] = None, manual: bool = False) -> None:
+        if self._grok_debug_endpoint_blocked:
+            self.log.emit("[warn] Grok送信停止中: Chrome debug endpoint 未到達")
+            return
+        if not self._is_chrome_debug_endpoint_ready(CHROME_DEBUG_PORT_FIXED):
+            self._grok_debug_endpoint_blocked = True
+            raise RuntimeError(f"Chrome debug endpoint未到達: 127.0.0.1:{CHROME_DEBUG_PORT_FIXED}")
         _, pipeline_script = self._resolve_scripts()
         wav_name = wav.name if wav else "manual"
         # 字幕は元テキストのまま送る
@@ -1087,6 +1103,7 @@ class PipelineWorker(QObject):
         p_cmd = [
             str(self._cfg.pipeline_python), str(pipeline_script),
             "--text", text,
+            "--port", str(CHROME_DEBUG_PORT_FIXED),
             "--sbv2-root", str(self._cfg.sbv2_root),
             "--model-name", self._cfg.sbv2_model_name,
             "--speaker", self._cfg.sbv2_speaker,
@@ -1676,8 +1693,8 @@ class MainWindow(QMainWindow):
         port_row = QHBoxLayout()
         port_row.addWidget(QLabel("デバッグポート:"))
         self.chrome_port_spin = QSpinBox()
-        self.chrome_port_spin.setRange(1024, 65535)
-        self.chrome_port_spin.setValue(9222)
+        self.chrome_port_spin.setRange(CHROME_DEBUG_PORT_FIXED, CHROME_DEBUG_PORT_FIXED)
+        self.chrome_port_spin.setValue(CHROME_DEBUG_PORT_FIXED)
         port_row.addWidget(self.chrome_port_spin)
         self.chrome_headless_chk = QCheckBox("ヘッドレス")
         port_row.addWidget(self.chrome_headless_chk)
@@ -1755,7 +1772,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _do_chrome_launch(self) -> None:
-        port = self.chrome_port_spin.value()
+        port = CHROME_DEBUG_PORT_FIXED
         headless = self.chrome_headless_chk.isChecked()
         profile_dir = str(self.chrome_profile_combo.currentData() or "").strip()
         self.chrome_launch_btn.setEnabled(False)
@@ -2136,7 +2153,7 @@ class MainWindow(QMainWindow):
             "conversion_dict": cfg.conversion_dict,
             "manual_history": self._manual_history[:50],
             "model_presets": self._model_presets,
-            "chrome_debug_port": self.chrome_port_spin.value(),
+            "chrome_debug_port": CHROME_DEBUG_PORT_FIXED,
             "chrome_headless": self.chrome_headless_chk.isChecked(),
             "chrome_profile": self.chrome_profile_combo.currentData() or "",
         }
@@ -2213,7 +2230,7 @@ class MainWindow(QMainWindow):
             self.sbv2_auto_start_chk.setChecked(b("sbv2_server_auto_start", True))
             self.video_metadata_edit.setText(s("video_metadata_path", self.video_metadata_edit.text()))
             # Selenium設定
-            self.chrome_port_spin.setValue(i("chrome_debug_port", 9222))
+            self.chrome_port_spin.setValue(CHROME_DEBUG_PORT_FIXED)
             self.chrome_headless_chk.setChecked(b("chrome_headless", False))
             saved_profile = s("chrome_profile", "")
             if saved_profile:
@@ -2357,7 +2374,7 @@ class MainWindow(QMainWindow):
 
         # Selenium自動起動（未接続の場合）→ Workerで非同期実行後にパイプライン起動
         if self._chrome_driver is None:
-            port = self.chrome_port_spin.value()
+            port = CHROME_DEBUG_PORT_FIXED
             headless = self.chrome_headless_chk.isChecked()
             profile_dir = str(self.chrome_profile_combo.currentData() or "").strip()
             self._append_log("[selenium] バックグラウンドで起動中...")
