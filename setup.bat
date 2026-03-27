@@ -51,34 +51,6 @@ echo.
 :: Upgrade pip
 echo Upgrading pip...
 "%PY_EXE%" -m pip install --upgrade pip
-if errorlevel 1 (
-    echo [ERROR] Failed to upgrade pip.
-    pause
-    exit /b 1
-)
-
-:: Install build tools (required for some packages)
-echo Installing build tools...
-"%PY_EXE%" -m pip install --upgrade setuptools wheel
-if errorlevel 1 (
-    echo [ERROR] Failed to install build tools.
-    pause
-    exit /b 1
-)
-
-:: Install bundled undetected-chromedriver wheel first (offline preferred)
-set "WHEEL_DIR=%~dp0vendor\wheels"
-if exist "%WHEEL_DIR%\undetected_chromedriver-3.5.5-py3-none-any.whl" (
-    echo Installing bundled undetected-chromedriver wheel...
-    "%PY_EXE%" -m pip install --no-index --find-links "%WHEEL_DIR%" --no-deps undetected-chromedriver==3.5.5
-    if errorlevel 1 (
-        echo [ERROR] Failed to install bundled undetected-chromedriver wheel.
-        pause
-        exit /b 1
-    )
-) else (
-    echo [WARN] Bundled undetected-chromedriver wheel not found: %WHEEL_DIR%
-)
 
 :: Install requirements
 echo.

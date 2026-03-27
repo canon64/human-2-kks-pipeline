@@ -1,23 +1,17 @@
-﻿"""
-Chrome launch helpers for Selenium debug attachment.
-"""
+﻿"""Chrome debug launcher utilities."""
+
+from __future__ import annotations
 
 import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import time
-import urllib.request
-
 
 log = logging.getLogger(__name__)
 
-# Default Chrome user-data root (system profile source)
 CHROME_USER_DATA = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
-
-# Keep a singleton UC driver in-process
 _uc_driver = None
 
 
@@ -39,13 +33,13 @@ def _read_chrome_version_from_registry() -> str:
     except Exception:
         return ""
 
-    candidates = [
+    keys = [
         (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon", "version"),
         (winreg.HKEY_LOCAL_MACHINE, r"Software\Google\Chrome\BLBeacon", "version"),
         (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Google\Chrome\BLBeacon", "version"),
     ]
 
-    for root, sub_key, value_name in candidates:
+    for root, sub_key, value_name in keys:
         try:
             with winreg.OpenKey(root, sub_key) as key:
                 value, _ = winreg.QueryValueEx(key, value_name)
@@ -58,18 +52,18 @@ def _read_chrome_version_from_registry() -> str:
 
 
 def _read_chrome_version_from_exe() -> str:
-    candidates: list[str] = []
     pf = os.environ.get("ProgramFiles", r"C:\Program Files")
     pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
     local_app = os.environ.get("LOCALAPPDATA", "")
-
-    candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
-    candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
+    candidates = [
+        os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
+    ]
     if local_app:
         candidates.append(os.path.join(local_app, "Google", "Chrome", "Application", "chrome.exe"))
 
     for exe_path in candidates:
-        if not os.path.exists(exe_path):
+        if not os.path.isfile(exe_path):
             continue
         try:
             proc = subprocess.run(
@@ -127,66 +121,17 @@ def _launch_uc(uc_mod, options, user_data: str, port: int, version_main: int | N
     return uc_mod.Chrome(**kwargs)
 
 
-def _is_debug_endpoint_ready(port: int, timeout_sec: float = 1.0) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout_sec) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
-def _wait_debug_endpoint(port: int, timeout_sec: float = 12.0, interval_sec: float = 0.3) -> bool:
-    deadline = time.time() + max(0.5, timeout_sec)
-    while time.time() < deadline:
-        if _is_debug_endpoint_ready(port=port, timeout_sec=1.0):
-            return True
-        time.sleep(interval_sec)
-    return False
-
-
-def _find_chrome_exe() -> str:
-    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-    pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-    local_app = os.environ.get("LOCALAPPDATA", "")
-    candidates = [
-        os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
-        os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
-    ]
-    if local_app:
-        candidates.append(os.path.join(local_app, "Google", "Chrome", "Application", "chrome.exe"))
-    for exe_path in candidates:
-        if os.path.isfile(exe_path):
-            return exe_path
-    raise FileNotFoundError("chrome.exe not found")
-
-
-def _spawn_debug_chrome(port: int, user_data: str, profile_dir: str, headless: bool) -> None:
-    chrome_exe = _find_chrome_exe()
-    cmd = [
-        chrome_exe,
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--remote-debugging-host=127.0.0.1",
-        f"--remote-debugging-port={port}",
-        f"--user-data-dir={user_data}",
-        "about:blank",
-    ]
-    if profile_dir:
-        cmd.append(f"--profile-directory={profile_dir}")
-    if headless:
-        cmd.append("--headless=new")
-
-    subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+def _remove_stale_locks(user_data: str) -> None:
+    for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        lock_path = os.path.join(user_data, lock_name)
+        if os.path.exists(lock_path):
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
 
 
 def get_profiles() -> list[dict]:
-    """Return available system Chrome profiles with lightweight account hints."""
     profiles: list[dict] = []
 
     if not os.path.isdir(CHROME_USER_DATA):
@@ -210,26 +155,21 @@ def get_profiles() -> list[dict]:
 
             account_info = prefs.get("account_info") or []
             first = account_info[0] if account_info and isinstance(account_info[0], dict) else {}
-            email = str(first.get("email", ""))
-            name = str(first.get("full_name", ""))
-
             profiles.append(
                 {
                     "profile_dir": item,
-                    "name": name,
-                    "email": email,
+                    "name": str(first.get("full_name", "")),
+                    "email": str(first.get("email", "")),
                 }
             )
         except Exception as e:
             log.warning("Profile read failed: %s - %s", item, e)
-            continue
 
     def sort_key(p: dict) -> tuple[int, int | str]:
         if p["profile_dir"] == "Default":
             return (0, 0)
         try:
-            num = int(str(p["profile_dir"]).replace("Profile ", ""))
-            return (1, num)
+            return (1, int(str(p["profile_dir"]).replace("Profile ", "")))
         except Exception:
             return (2, str(p["profile_dir"]))
 
@@ -237,89 +177,20 @@ def get_profiles() -> list[dict]:
     return profiles
 
 
-def _sanitize_profile_dir(profile_dir: str) -> str:
-    value = (profile_dir or "").strip()
-    if not value:
-        return ""
-    if os.path.isabs(value):
-        raise ValueError("chrome_profile must be a profile directory name, not an absolute path")
-    if "/" in value or "\\" in value:
-        raise ValueError("chrome_profile must not contain path separators")
-    normalized = os.path.normpath(value)
-    if normalized in ("", ".", "..") or normalized.startswith(".."):
-        raise ValueError(f"invalid chrome_profile: {value}")
-    return normalized
-
-
-def _sync_profile_to_managed_user_data(managed_user_data: str, profile_dir: str) -> None:
-    src_profile = os.path.join(CHROME_USER_DATA, profile_dir)
-    dst_profile = os.path.join(managed_user_data, profile_dir)
-    if os.path.isdir(dst_profile):
-        return
-    if not os.path.isdir(src_profile):
-        raise FileNotFoundError(
-            f"Requested profile does not exist: {profile_dir} (source={CHROME_USER_DATA})"
-        )
-
-    os.makedirs(managed_user_data, exist_ok=True)
-
-    src_local_state = os.path.join(CHROME_USER_DATA, "Local State")
-    dst_local_state = os.path.join(managed_user_data, "Local State")
-    if os.path.isfile(src_local_state) and not os.path.isfile(dst_local_state):
-        shutil.copy2(src_local_state, dst_local_state)
-
-    ignore = shutil.ignore_patterns("SingletonLock", "SingletonSocket", "SingletonCookie")
-    shutil.copytree(src_profile, dst_profile, dirs_exist_ok=True, ignore=ignore)
-    log.info("Chrome profile synced: %s -> %s", src_profile, dst_profile)
-
-
 def launch_chrome(
     port: int = 9222,
     headless: bool = False,
-    extra_args: list[str] = None,
+    extra_args: list[str] | None = None,
     data_dir: str = "",
     profile_dir: str = "",
 ):
-    """Launch Chrome via undetected_chromedriver and return a connected driver.
-
-    Note: for modern Chrome versions, remote debugging on the default system
-    user-data dir can be blocked. We therefore use a managed user-data dir by
-    default and optionally clone the selected system profile into it once.
-    """
+    """Launch Chrome with undetected_chromedriver and keep major versions aligned."""
     global _uc_driver
     import undetected_chromedriver as uc
 
-    selected_profile = _sanitize_profile_dir(profile_dir)
-    if data_dir:
-        user_data = data_dir
-        user_data_source = "custom"
-    else:
-        user_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"chrome_debug_data_{port}")
-        user_data_source = "managed"
-
-    if user_data_source == "managed":
-        os.makedirs(user_data, exist_ok=True)
-    elif not os.path.isdir(user_data):
-        raise FileNotFoundError(f"user-data-dir not found: {user_data}")
-
-    if selected_profile:
-        if user_data_source == "managed":
-            _sync_profile_to_managed_user_data(user_data, selected_profile)
-        profile_path = os.path.join(user_data, selected_profile)
-        if not os.path.isdir(profile_path):
-            raise FileNotFoundError(
-                f"Profile dir not found: {selected_profile} (user-data-dir={user_data})"
-            )
-
-    # Remove stale locks in managed dir.
-    if user_data_source == "managed":
-        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            lock_path = os.path.join(user_data, lock_name)
-            if os.path.exists(lock_path):
-                try:
-                    os.remove(lock_path)
-                except OSError:
-                    pass
+    user_data = data_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), f"chrome_debug_data_{port}")
+    os.makedirs(user_data, exist_ok=True)
+    _remove_stale_locks(user_data)
 
     options = uc.ChromeOptions()
     options.add_argument("--no-first-run")
@@ -327,35 +198,21 @@ def launch_chrome(
     options.add_argument("--remote-debugging-host=127.0.0.1")
     options.add_argument(f"--remote-debugging-port={port}")
     options.add_argument(f"--user-data-dir={user_data}")
-    if selected_profile:
-        options.add_argument(f"--profile-directory={selected_profile}")
-
+    if profile_dir:
+        options.add_argument(f"--profile-directory={profile_dir}")
     if headless:
         options.add_argument("--headless=new")
-
     if extra_args:
         for arg in extra_args:
             options.add_argument(arg)
 
     detected_major = _detect_chrome_major()
-    profile_log = selected_profile or "(default)"
-    if detected_major is not None:
-        log.info(
-            "Chrome launch (undetected): port=%s, chrome_major=%s, user_data_dir=%s, profile=%s, source=%s",
-            port,
-            detected_major,
-            user_data,
-            profile_log,
-            user_data_source,
-        )
-    else:
-        log.info(
-            "Chrome launch (undetected): port=%s, chrome_major=auto, user_data_dir=%s, profile=%s, source=%s",
-            port,
-            user_data,
-            profile_log,
-            user_data_source,
-        )
+    log.info(
+        "Chrome launch (undetected): port=%s, detected_major=%s, user_data_dir=%s",
+        port,
+        detected_major if detected_major is not None else "auto",
+        user_data,
+    )
 
     try:
         _uc_driver = _launch_uc(
@@ -370,7 +227,7 @@ def launch_chrome(
         retry_major = _extract_browser_major_from_error(first_err)
         if retry_major is not None and retry_major != detected_major:
             log.warning(
-                "ChromeDriver major mismatch: detected=%s, retry=%s",
+                "ChromeDriver major mismatch detected: detected=%s, retry=%s",
                 detected_major,
                 retry_major,
             )
@@ -382,28 +239,12 @@ def launch_chrome(
                 version_main=retry_major,
             )
         else:
-            if "cannot connect to chrome" in first_err.lower() and not _is_debug_endpoint_ready(port=port):
-                log.warning("UC launch failed; trying direct chrome spawn once: port=%s", port)
-                _spawn_debug_chrome(
-                    port=port,
-                    user_data=user_data,
-                    profile_dir=selected_profile,
-                    headless=headless,
-                )
-                if not _wait_debug_endpoint(port=port, timeout_sec=15.0):
-                    raise RuntimeError(
-                        f"Chrome debug endpoint unreachable: 127.0.0.1:{port} "
-                        f"(user_data_dir={user_data}, profile={selected_profile or '(default)'})"
-                    ) from first_exc
-                _uc_driver = get_driver(port=port)
-                return _uc_driver
             raise
 
     return _uc_driver
 
 
 def get_driver(port: int = 9222, wait: float = 0):
-    """Return existing driver if available, otherwise attach via debuggerAddress."""
     global _uc_driver
     if wait > 0:
         time.sleep(wait)
@@ -420,10 +261,8 @@ def get_driver(port: int = 9222, wait: float = 0):
     return webdriver.Chrome(options=options)
 
 
-def close_chrome():
-    """Close launched Chrome driver if present."""
+def close_chrome() -> None:
     global _uc_driver
-
     if _uc_driver:
         log.info("Chrome close")
         try:
