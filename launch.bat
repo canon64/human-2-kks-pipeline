@@ -1,9 +1,4 @@
 @echo off
-if /i not "%H2KKS_MINIMIZED%"=="1" (
-    set "H2KKS_MINIMIZED=1"
-    start "" /min cmd /c "\"%~f0\" %*"
-    exit /b
-)
 setlocal
 cd /d "%~dp0"
 
