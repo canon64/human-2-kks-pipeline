@@ -1,7 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import subprocess
 import traceback
@@ -41,19 +42,115 @@ def _parse_bool(value: Any) -> bool:
     return False
 
 
-def _apply_conversion_rules(response: str, rules: list[dict[str, Any]], display_only: bool = False) -> str:
+def _apply_conversion_rules(
+    response: str,
+    rules: list[dict[str, Any]],
+    display_only: bool = False,
+    random_pick_cache: dict[str, str] | None = None,
+    logger=None,
+) -> str:
     converted = response
-    for entry in rules:
+    mode = "display" if display_only else "send"
+    pick_cache = random_pick_cache if random_pick_cache is not None else {}
+    for idx, entry in enumerate(rules):
         if not isinstance(entry, dict):
             continue
-        if display_only and not _parse_bool(entry.get("display_apply", False)):
-            continue
         from_str = str(entry.get("from", ""))
-        to_str = str(entry.get("to", ""))
         if not from_str:
             continue
+        cache_key = f"{idx}:{from_str}"
+        if display_only:
+            if "to_display" in entry:
+                to_str = str(entry.get("to_display", ""))
+                # 表示用が空なら、display_applyのON/OFFに関係なく送信用と同じ候補を使う。
+                if to_str == "":
+                    if cache_key in pick_cache:
+                        to_str = pick_cache[cache_key]
+                    else:
+                        fallback_value = entry.get("to_sbv2", entry.get("to_grok", entry.get("to", "")))
+                        candidates = _parse_random_candidates(fallback_value)
+                        to_str = random.choice(candidates) if candidates else ""
+                        pick_cache[cache_key] = to_str
+                    if logger is not None:
+                        logger.info(
+                            "conversion_display_fallback mode=%s from=%r to=%r display_apply=%s",
+                            mode,
+                            from_str,
+                            to_str,
+                            _parse_bool(entry.get("display_apply", False)),
+                        )
+                elif not _parse_bool(entry.get("display_apply", False)):
+                    continue
+            else:
+                if not _parse_bool(entry.get("display_apply", False)):
+                    continue
+                to_str = str(entry.get("to", ""))
+        else:
+            if "to_sbv2" in entry:
+                to_value = entry.get("to_sbv2", "")
+            elif "to_grok" in entry:
+                to_value = entry.get("to_grok", "")
+            else:
+                to_value = entry.get("to", "")
+            candidates = _parse_random_candidates(to_value)
+            if candidates:
+                to_str = random.choice(candidates)
+            else:
+                to_str = ""
+            pick_cache[cache_key] = to_str
+            if logger is not None and len(candidates) > 1:
+                logger.info(
+                    "conversion_random_pick mode=%s from=%r picked=%r choices=%d",
+                    mode,
+                    from_str,
+                    to_str,
+                    len(candidates),
+                )
+        hit = converted.count(from_str)
+        if hit <= 0:
+            continue
+        if logger is not None:
+            if to_str == "":
+                logger.warning("conversion_empty_dst mode=%s from=%r hits=%d", mode, from_str, hit)
+            else:
+                logger.info("conversion_applied mode=%s from=%r to=%r hits=%d", mode, from_str, to_str, hit)
         converted = converted.replace(from_str, to_str)
     return converted
+
+
+def _parse_random_candidates(value: Any) -> list[str]:
+    if isinstance(value, list):
+        rows = [str(v).strip() for v in value]
+        rows = [r for r in rows if r != ""]
+        return rows
+
+    raw = str(value or "").strip()
+    if raw == "":
+        return [""]
+
+    # JSON配列形式: ["a","b","c"]
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                rows = [str(v).strip() for v in parsed]
+                rows = [r for r in rows if r != ""]
+                if rows:
+                    return rows
+        except Exception:
+            pass
+
+    # 1行1候補 または "|" 区切り
+    if "\n" in raw:
+        rows = [r.strip() for r in raw.splitlines()]
+        rows = [r for r in rows if r != ""]
+        return rows if rows else [""]
+    if "|" in raw:
+        rows = [r.strip() for r in raw.split("|")]
+        rows = [r for r in rows if r != ""]
+        return rows if rows else [""]
+
+    return [raw]
 
 
 def _pick_model_file(model_dir: Path, explicit_model_file: str | None) -> Path:
@@ -189,6 +286,7 @@ def _tts_via_http_server(
     server_url: str,
     text: str,
     model_name: str,
+    model_file: str,
     speaker: str,
     style: str,
     style_weight: float,
@@ -214,6 +312,9 @@ def _tts_via_http_server(
         "noise": noise,
         "length": length,
     }
+    model_file_name = (model_file or "").strip()
+    if model_file_name:
+        params["model_file"] = model_file_name
     url = server_url.rstrip("/") + "/voice?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -281,7 +382,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--face", type=int, default=-1, help="Face id for event payload. -1 to keep default behavior.")
     parser.add_argument("--keep-current-face", action="store_true", help="Send keepCurrentFace flag with event.")
     parser.add_argument("--no-send-event", action="store_true", help="Do not send KKS event after wav merge.")
-    parser.add_argument("--conversion-json", default="", help="変換辞書JSON ([{\"from\":\"...\",\"to\":\"...\"}])。TTS前にレスポンスに適用。")
+    parser.add_argument(
+        "--conversion-json",
+        default="",
+        help="変換辞書JSON ([{\"from\":\"...\",\"to_sbv2\":\"...\",\"to_display\":\"...\",\"display_apply\":true}])。to_sbv2は単一文字列/改行区切り/|区切り/JSON配列を受け付け、送信時にランダム1件を使用。",
+    )
     return parser
 
 
@@ -339,15 +444,28 @@ def main() -> int:
             response = wait_for_response(driver, config, logger, baseline, stop_before)
 
         # 変換辞書の適用
-        response_original = response  # 変換前のGrokレスポンスを保存
+        response_original = response  # 変換前のGrokレスポンスを保持
         conversion_dict: list[dict[str, Any]] = []
         if args.conversion_json.strip():
             try:
                 conversion_dict = json.loads(args.conversion_json)
             except Exception:
                 logger.warning("conversion_json parse failed, skipping")
-        response = _apply_conversion_rules(response_original, conversion_dict, display_only=False)
-        response_display = _apply_conversion_rules(response_original, conversion_dict, display_only=True)
+        random_pick_cache: dict[str, str] = {}
+        response = _apply_conversion_rules(
+            response_original,
+            conversion_dict,
+            display_only=False,
+            random_pick_cache=random_pick_cache,
+            logger=logger,
+        )
+        response_display = _apply_conversion_rules(
+            response_original,
+            conversion_dict,
+            display_only=True,
+            random_pick_cache=random_pick_cache,
+            logger=logger,
+        )
 
         lines = _split_response_lines(response)
         if not lines:
@@ -371,7 +489,13 @@ def main() -> int:
 
         if sbv2_server_url:
             # ── HTTPサーバー経由（モデルロード済み・高速） ──────────────────
-            logger.info("tts_via_server url=%s model=%s", sbv2_server_url, args.model_name)
+            requested_model_file = (args.model_file or "").strip()
+            logger.info(
+                "tts_via_server url=%s model=%s model_file=%s",
+                sbv2_server_url,
+                args.model_name,
+                requested_model_file or "(server-auto)",
+            )
             expected_part_names = [f"line_{i+1:03d}.wav" for i in range(len(lines))]
             for i, line_text in enumerate(lines):
                 out_path = parts_dir / expected_part_names[i]
@@ -379,6 +503,7 @@ def main() -> int:
                     server_url=sbv2_server_url,
                     text=line_text,
                     model_name=args.model_name,
+                    model_file=requested_model_file,
                     speaker=args.speaker,
                     style=args.style,
                     style_weight=args.style_weight,
@@ -389,7 +514,7 @@ def main() -> int:
                     output_path=out_path,
                 )
                 logger.info("tts_line_done line=%d/%d file=%s", i + 1, len(lines), out_path.name)
-            model_file_name = args.model_file or "(server)"
+            model_file_name = requested_model_file or "(server-auto)"
         else:
             # ── サブプロセス経由（従来方式） ──────────────────────────────────
             sbv2_python = Path(args.sbv2_python).resolve() if args.sbv2_python else (sbv2_root / "venv" / "Scripts" / "python.exe")

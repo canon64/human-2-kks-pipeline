@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import os
+import sys
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from config.constants import MUTEX_NAME
 from entrypoints.gui_entry import run_gui
 from gui.main_window import MainWindow

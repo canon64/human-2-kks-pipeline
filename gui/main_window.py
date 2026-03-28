@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -15,7 +15,7 @@ import urllib.request
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -93,7 +93,8 @@ class _ConversionTableDelegate(QStyledItemDelegate):
                 if isinstance(table, QTableWidget):
                     row = table.currentRow()
                     col = table.currentColumn()
-                    if row == table.rowCount() - 1 and col == 1:
+                    last_text_col = max(0, table.columnCount() - 2)
+                    if row == table.rowCount() - 1 and col == last_text_col:
                         self.commitData.emit(editor)
                         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
                         self.request_new_row.emit()
@@ -155,6 +156,8 @@ class MainWindow(QMainWindow):
         self._fw_test_chunks: list[np.ndarray] = []
         self._fw_test_sr = 16000
         self._fw_test_worker: Optional[_TaskWorker] = None
+        self._fw_test_guard_active = False
+        self._fw_test_guard_prev_paused = False
         self._sbv2_test_worker: Optional[_TaskWorker] = None
         self._sbv2_test_last_wav: Optional[Path] = None
 
@@ -244,7 +247,7 @@ class MainWindow(QMainWindow):
         device_row.addWidget(refresh_btn)
         form.addRow("入力デバイス", device_row)
 
-        self.wav_dir_edit = QLineEdit(str(Path(__file__).resolve().parent / "outputs" / "wav"))
+        self.wav_dir_edit = QLineEdit(str(PROJECT_ROOT / "outputs" / "wav"))
         wav_btn = QPushButton("参照")
         wav_btn.clicked.connect(lambda: self._pick_dir(self.wav_dir_edit, "WAV保存先"))
         form.addRow("WAV保存先", self._hrow(self.wav_dir_edit, wav_btn))
@@ -293,12 +296,12 @@ class MainWindow(QMainWindow):
         kks_btn.clicked.connect(lambda: self._pick_dir(self.kks_root_edit, "KKSフォルダ"))
         form.addRow("KKSフォルダ", self._hrow(self.kks_root_edit, kks_btn))
 
-        self.output_dir_edit = QLineEdit(str(Path(__file__).resolve().parent / "outputs"))
+        self.output_dir_edit = QLineEdit(str(PROJECT_ROOT / "outputs"))
         out_btn = QPushButton("参照")
         out_btn.clicked.connect(lambda: self._pick_dir(self.output_dir_edit, "出力先"))
         form.addRow("出力先", self._hrow(self.output_dir_edit, out_btn))
 
-        _local_py = str(Path(__file__).resolve().parent / "python" / "python.exe")
+        _local_py = str(PROJECT_ROOT / "python" / "python.exe")
         self.faster_python_edit = QLineEdit(_local_py)
         fp_btn = QPushButton("参照")
         fp_btn.clicked.connect(lambda: self._pick_file(self.faster_python_edit, "FasterWhisper Python"))
@@ -474,12 +477,31 @@ class MainWindow(QMainWindow):
         self.fw_test_hold_btn.pressed.connect(self._fw_test_start_record)
         self.fw_test_hold_btn.released.connect(self._fw_test_stop_record)
         fw_layout.addWidget(self.fw_test_hold_btn)
+        self.fw_test_text_edit = QPlainTextEdit()
+        self.fw_test_text_edit.setPlaceholderText("手入力テキスト（FasterWhisper結果の代わりに変換テスト）")
+        self.fw_test_text_edit.setMaximumHeight(84)
+        fw_layout.addWidget(self.fw_test_text_edit)
+        fw_text_row = QHBoxLayout()
+        self.fw_test_text_btn = QPushButton("入力テキストでテスト")
+        self.fw_test_text_btn.clicked.connect(self._run_fw_test_manual_text)
+        fw_text_row.addWidget(self.fw_test_text_btn)
+        fw_text_row.addStretch()
+        fw_layout.addLayout(fw_text_row)
         self.fw_test_status_label = QLabel("待機")
         fw_layout.addWidget(self.fw_test_status_label)
-        self.fw_test_result_edit = QPlainTextEdit()
-        self.fw_test_result_edit.setReadOnly(True)
-        self.fw_test_result_edit.setPlaceholderText("ここに文字起こし結果が表示されます。")
-        fw_layout.addWidget(self.fw_test_result_edit, 1)
+        fw_result_row = QHBoxLayout()
+        fw_raw_panel, self.fw_test_original_edit = self._make_labeled_result_edit("原文", "文字起こしの生テキスト")
+        fw_send_panel, self.fw_test_send_edit = self._make_labeled_result_edit(
+            "送信用",
+            "変換後（Grok送信用）",
+            action_text="送信",
+            action_callback=self._send_fw_test_send_text,
+        )
+        fw_disp_panel, self.fw_test_display_edit = self._make_labeled_result_edit("表示用", "変換後（表示用）")
+        fw_result_row.addWidget(fw_raw_panel, 1)
+        fw_result_row.addWidget(fw_send_panel, 1)
+        fw_result_row.addWidget(fw_disp_panel, 1)
+        fw_layout.addLayout(fw_result_row, 1)
         layout.addWidget(fw_group)
 
         sbv2_group = QGroupBox("SBV2 テスト")
@@ -526,6 +548,14 @@ class MainWindow(QMainWindow):
 
         self.sbv2_test_status_label = QLabel("待機")
         sbv2_layout.addWidget(self.sbv2_test_status_label)
+        sbv2_result_row = QHBoxLayout()
+        sbv2_raw_panel, self.sbv2_test_original_edit = self._make_labeled_result_edit("原文", "SBV2入力の元テキスト")
+        sbv2_send_panel, self.sbv2_test_send_edit = self._make_labeled_result_edit("送信用", "変換後（SBV2へ渡す）")
+        sbv2_disp_panel, self.sbv2_test_display_edit = self._make_labeled_result_edit("表示用", "変換後（字幕/表示）")
+        sbv2_result_row.addWidget(sbv2_raw_panel, 1)
+        sbv2_result_row.addWidget(sbv2_send_panel, 1)
+        sbv2_result_row.addWidget(sbv2_disp_panel, 1)
+        sbv2_layout.addLayout(sbv2_result_row, 1)
         layout.addWidget(sbv2_group, 1)
 
     def _on_sbv2_test_keep_face_toggled(self, checked: bool) -> None:
@@ -537,6 +567,101 @@ class MainWindow(QMainWindow):
 
     def _on_sbv2_test_volume_changed(self, value: int) -> None:
         self.sbv2_test_volume_label.setText(f"{value}%")
+
+    @staticmethod
+    def _apply_text_conversion_rules(text: str, rules: list[dict], mode: str) -> str:
+        converted = str(text or "")
+        target = "display" if str(mode).strip().lower() == "display" else "send"
+        for row in list(rules or []):
+            if not isinstance(row, dict):
+                continue
+            src = str(row.get("from", ""))
+            if not src:
+                continue
+            if target == "display":
+                if not bool(row.get("display_apply", True)):
+                    continue
+                if "to_display" in row:
+                    dst = str(row.get("to_display", ""))
+                elif "to" in row:
+                    dst = str(row.get("to", ""))
+                else:
+                    dst = str(row.get("to_grok", row.get("to_sbv2", "")))
+            else:
+                if "to_grok" in row:
+                    dst = str(row.get("to_grok", ""))
+                elif "to_sbv2" in row:
+                    dst = str(row.get("to_sbv2", ""))
+                elif "to" in row:
+                    dst = str(row.get("to", ""))
+                else:
+                    dst = str(row.get("to_display", ""))
+            converted = converted.replace(src, dst)
+        return converted
+
+    @staticmethod
+    def _make_labeled_result_edit(
+        title: str,
+        placeholder: str,
+        action_text: str = "",
+        action_callback: Optional[Callable[[], None]] = None,
+    ) -> tuple[QWidget, QPlainTextEdit]:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        header = QHBoxLayout()
+        header.addWidget(QLabel(title))
+        if action_text and action_callback is not None:
+            action_btn = QPushButton(action_text)
+            action_btn.setMaximumWidth(84)
+            action_btn.clicked.connect(action_callback)
+            header.addWidget(action_btn)
+        header.addStretch()
+        panel_layout.addLayout(header)
+        edit = QPlainTextEdit()
+        edit.setReadOnly(True)
+        edit.setPlaceholderText(placeholder)
+        panel_layout.addWidget(edit, 1)
+        return panel, edit
+
+    def _send_fw_test_send_text(self) -> None:
+        text = self.fw_test_send_edit.toPlainText().strip()
+        if not text or text == "(空テキスト)":
+            self.fw_test_status_label.setText("送信用テキストが空です")
+            return
+        if self._send_text_to_pipeline(text, "fw-test送信"):
+            self.fw_test_status_label.setText("送信完了（送信用）")
+
+    def _enter_fw_test_guard(self) -> None:
+        if self._fw_test_guard_active:
+            return
+        self._fw_test_guard_active = True
+        self._fw_test_guard_prev_paused = bool(self._paused)
+        if (not self._running) or self._fw_test_guard_prev_paused:
+            return
+        if self._pipeline_worker is not None:
+            self._pipeline_worker.pause()
+        self._stop_recorder()
+        self._append_log("[test-guard] FWテスト中: 本録音を一時無効化")
+
+    def _leave_fw_test_guard(self) -> None:
+        if not self._fw_test_guard_active:
+            return
+        was_paused = self._fw_test_guard_prev_paused
+        self._fw_test_guard_active = False
+        self._fw_test_guard_prev_paused = False
+        if (not self._running) or was_paused:
+            return
+        if self._pipeline_worker is not None:
+            self._pipeline_worker.resume()
+        try:
+            cfg = self._build_config()
+            if self._is_recorder_needed(cfg):
+                self._start_recorder(cfg)
+        except Exception as exc:
+            self._append_log(f"[test-guard] FWテスト復帰失敗: {exc}")
+            return
+        self._append_log("[test-guard] FWテスト終了: 本録音を復帰")
 
     def _fw_test_audio_callback(self, indata, frames, time_info, status) -> None:
         if status:
@@ -561,6 +686,7 @@ class MainWindow(QMainWindow):
             return
         if self._fw_test_stream is not None:
             return
+        self._enter_fw_test_guard()
         self._fw_test_chunks = []
         device = self.device_combo.currentData()
         try:
@@ -579,9 +705,11 @@ class MainWindow(QMainWindow):
             self.fw_test_hold_btn.setText("押して話す（離して判定）")
             self.fw_test_status_label.setText(f"録音失敗: {exc}")
             self._append_log(f"[fw-test] record start failed: {exc}")
+            self._leave_fw_test_guard()
 
     def _fw_test_stop_record(self) -> None:
         if self._fw_test_stream is None:
+            self._leave_fw_test_guard()
             return
         try:
             self._fw_test_stream.stop()
@@ -594,6 +722,7 @@ class MainWindow(QMainWindow):
         self.fw_test_hold_btn.setText("押して話す（離して判定）")
         if not self._fw_test_chunks:
             self.fw_test_status_label.setText("録音データなし")
+            self._leave_fw_test_guard()
             return
 
         pcm = np.concatenate(self._fw_test_chunks, axis=0).reshape(-1)
@@ -601,6 +730,7 @@ class MainWindow(QMainWindow):
         duration = len(pcm) / float(self._fw_test_sr)
         if duration < 0.2:
             self.fw_test_status_label.setText("録音が短すぎます")
+            self._leave_fw_test_guard()
             return
 
         out_root = Path(self.output_dir_edit.text().strip()).expanduser().resolve() / "tests" / "fasterwhisper"
@@ -608,14 +738,40 @@ class MainWindow(QMainWindow):
         self._write_wav_float32_mono(wav_path, pcm, self._fw_test_sr)
         self.fw_test_status_label.setText("文字起こし中...")
         self._append_log(f"[fw-test] recorded {wav_path.name} ({duration:.2f}s)")
+        self._leave_fw_test_guard()
         self._fw_test_worker = _TaskWorker(lambda: self._run_fw_test_transcribe(wav_path))
         self._fw_test_worker.result_ready.connect(self._on_fw_test_transcribe_done)
         self._fw_test_worker.error_occurred.connect(self._on_fw_test_transcribe_error)
         self._fw_test_worker.start()
 
+    def _run_fw_test_manual_text(self) -> None:
+        if self._fw_test_worker is not None and self._fw_test_worker.isRunning():
+            self.fw_test_status_label.setText("文字起こし中...")
+            return
+        raw_text = self.fw_test_text_edit.toPlainText().strip()
+        if not raw_text:
+            self.fw_test_status_label.setText("入力テキストが空です")
+            return
+        try:
+            cfg = self._build_config()
+        except Exception as exc:
+            self.fw_test_status_label.setText("設定エラー")
+            self._append_log(f"[fw-test] text config error: {exc}")
+            return
+
+        text_send = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send").strip()
+        text_display = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="display").strip()
+        self.fw_test_original_edit.setPlainText(raw_text or "(空テキスト)")
+        self.fw_test_send_edit.setPlainText(text_send or "(空テキスト)")
+        self.fw_test_display_edit.setPlainText(text_display or "(空テキスト)")
+        self.fw_test_status_label.setText("完了（手入力）")
+        self._append_log(f"[fw-test] text original: {raw_text[:80]}")
+        self._append_log(f"[fw-test] text send: {text_send[:80]}")
+        self._append_log(f"[fw-test] text display: {text_display[:80]}")
+
     def _run_fw_test_transcribe(self, wav_path: Path) -> dict:
         cfg = self._build_config()
-        script = Path(__file__).resolve().parent / "run_transcribe_one_wav.py"
+        script = PROJECT_ROOT / "run_transcribe_one_wav.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
         cmd = [
@@ -637,6 +793,10 @@ class MainWindow(QMainWindow):
             env=_with_utf8_env(),
         )
         payload = _last_json_line(proc.stdout or "")
+        raw_text = str(payload.get("text", "")).strip()
+        payload["text_original"] = raw_text
+        payload["text_send"] = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send")
+        payload["text_display"] = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="display")
         payload["audio_path"] = str(wav_path)
         payload["returncode"] = proc.returncode
         if proc.returncode != 0 and payload.get("ok", False):
@@ -648,13 +808,21 @@ class MainWindow(QMainWindow):
         self._fw_test_worker = None
         data = payload if isinstance(payload, dict) else {}
         if data.get("ok"):
-            text = str(data.get("text", "")).strip()
-            self.fw_test_result_edit.setPlainText(text or "(空テキスト)")
+            text_original = str(data.get("text_original", data.get("text", ""))).strip()
+            text_send = str(data.get("text_send", text_original)).strip()
+            text_display = str(data.get("text_display", text_original)).strip()
+            self.fw_test_original_edit.setPlainText(text_original or "(空テキスト)")
+            self.fw_test_send_edit.setPlainText(text_send or "(空テキスト)")
+            self.fw_test_display_edit.setPlainText(text_display or "(空テキスト)")
             self.fw_test_status_label.setText("完了")
-            self._append_log(f"[fw-test] done: {text[:80]}")
+            self._append_log(f"[fw-test] original: {text_original[:80]}")
+            self._append_log(f"[fw-test] send: {text_send[:80]}")
+            self._append_log(f"[fw-test] display: {text_display[:80]}")
         else:
             err = str(data.get("error", "unknown error"))
-            self.fw_test_result_edit.setPlainText("")
+            self.fw_test_original_edit.setPlainText("")
+            self.fw_test_send_edit.setPlainText("")
+            self.fw_test_display_edit.setPlainText("")
             self.fw_test_status_label.setText("失敗")
             self._append_log(f"[fw-test] failed: {err}")
 
@@ -722,7 +890,7 @@ class MainWindow(QMainWindow):
             self.sbv2_test_status_label.setText("GUI再生中")
 
     def _resolve_event_sender_script(self, cfg: AppConfig) -> Path:
-        local = Path(__file__).resolve().parent / "send_voice_face_event.ps1"
+        local = PROJECT_ROOT / "send_voice_face_event.ps1"
         if local.exists():
             return local
         return cfg.kks_root / "work" / "tools" / "voice_face_event_pipe_tester" / "send_voice_face_event.ps1"
@@ -774,7 +942,7 @@ class MainWindow(QMainWindow):
         return proc.returncode == 0, detail
 
     def _run_sbv2_test_task(self, cfg: AppConfig, text: str) -> dict:
-        script = Path(__file__).resolve().parent / "run_grok_tts_event.py"
+        script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
         cmd = [
@@ -794,6 +962,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--model-file", cfg.sbv2_model_file])
         if cfg.sbv2_server_url:
             cmd.extend(["--sbv2-server-url", cfg.sbv2_server_url])
+        if cfg.conversion_dict:
+            cmd.extend(["--conversion-json", json.dumps(list(cfg.conversion_dict), ensure_ascii=False)])
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -808,6 +978,10 @@ class MainWindow(QMainWindow):
         payload = _last_json_line(proc.stdout or "")
         if not payload.get("ok"):
             raise RuntimeError(str(payload.get("error", "sbv2 test failed")))
+        response_original = str(payload.get("response_original", text))
+        payload.setdefault("response_original", response_original)
+        payload.setdefault("response", self._apply_text_conversion_rules(response_original, cfg.conversion_dict, mode="send"))
+        payload.setdefault("response_display", self._apply_text_conversion_rules(response_original, cfg.conversion_dict, mode="display"))
         payload["returncode"] = proc.returncode
         return payload
 
@@ -834,6 +1008,15 @@ class MainWindow(QMainWindow):
     def _on_sbv2_test_done(self, payload: object) -> None:
         self._sbv2_test_worker = None
         data = payload if isinstance(payload, dict) else {}
+        response_original = str(data.get("response_original", "")).strip()
+        response_send = str(data.get("response", response_original)).strip()
+        response_display = str(data.get("response_display", response_original)).strip()
+        self.sbv2_test_original_edit.setPlainText(response_original or "(空テキスト)")
+        self.sbv2_test_send_edit.setPlainText(response_send or "(空テキスト)")
+        self.sbv2_test_display_edit.setPlainText(response_display or "(空テキスト)")
+        self._append_log(f"[sbv2-test] original: {response_original[:80]}")
+        self._append_log(f"[sbv2-test] send: {response_send[:80]}")
+        self._append_log(f"[sbv2-test] display: {response_display[:80]}")
         merged_wav = Path(str(data.get("merged_wav", ""))).resolve()
         if not merged_wav.exists():
             self.sbv2_test_status_label.setText("音声ファイルなし")
@@ -861,10 +1044,43 @@ class MainWindow(QMainWindow):
         else:
             self.sbv2_test_status_label.setText("GUI再生失敗")
 
+    def _log_sbv2_health_snapshot(self, reason: str) -> None:
+        try:
+            cfg = self._active_runtime_cfg if self._active_runtime_cfg is not None else self._build_config()
+        except Exception as exc:
+            self._append_log(f"[sbv2-diag] {reason} config error: {exc}")
+            return
+
+        base_url = (cfg.sbv2_server_url or "").strip()
+        if not base_url:
+            self._append_log(f"[sbv2-diag] {reason} sbv2_server_url is empty")
+        else:
+            health_url = base_url.rstrip("/") + "/models/info"
+            try:
+                with urllib.request.urlopen(health_url, timeout=2.0) as resp:
+                    status = getattr(resp, "status", 200)
+                    body = resp.read(256)
+                self._append_log(f"[sbv2-diag] {reason} health_ok status={status} bytes={len(body)}")
+            except Exception as exc:
+                self._append_log(f"[sbv2-diag] {reason} health_ng: {exc}")
+
+        worker = self._pipeline_worker
+        if worker is not None and hasattr(worker, "_emit_sbv2_diagnostics"):
+            try:
+                worker._emit_sbv2_diagnostics(f"gui_{reason}")
+            except Exception as exc:
+                self._append_log(f"[sbv2-diag] {reason} worker-diag failed: {exc}")
+
     def _on_sbv2_test_error(self, err: str) -> None:
         self._sbv2_test_worker = None
         self.sbv2_test_status_label.setText("失敗")
+        self.sbv2_test_original_edit.setPlainText("")
+        self.sbv2_test_send_edit.setPlainText("")
+        self.sbv2_test_display_edit.setPlainText("")
         self._append_log(f"[sbv2-test] error: {err}")
+        lower = (err or "").lower()
+        if ("10054" in err) or ("10061" in err) or ("connection reset" in lower) or ("connection refused" in lower):
+            self._log_sbv2_health_snapshot("sbv2_test_error")
 
     def _build_conversion_tab(self) -> None:
         tab = QWidget()
@@ -872,12 +1088,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("TTS前に適用するテキスト変換（上から順に適用）:"))
 
-        self.conversion_table = QTableWidget(0, 3)
-        self.conversion_table.setHorizontalHeaderLabels(["変換前", "変換後", "表示適用"])
+        self.conversion_table = QTableWidget(0, 4)
+        self.conversion_table.setHorizontalHeaderLabels(["変換前", "SBV2送信用", "表示用", "表示適用"])
         self.conversion_table.horizontalHeader().setStretchLastSection(True)
-        self.conversion_table.setColumnWidth(0, 250)
-        self.conversion_table.setColumnWidth(1, 250)
-        self.conversion_table.setColumnWidth(2, 110)
+        self.conversion_table.setColumnWidth(0, 220)
+        self.conversion_table.setColumnWidth(1, 220)
+        self.conversion_table.setColumnWidth(2, 220)
+        self.conversion_table.setColumnWidth(3, 110)
         self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table)
         self._conversion_table_delegate.request_new_row.connect(self._conv_add_row)
         self.conversion_table.setItemDelegate(self._conversion_table_delegate)
@@ -901,7 +1118,8 @@ class MainWindow(QMainWindow):
         table.insertRow(row)
         table.setItem(row, 0, QTableWidgetItem(""))
         table.setItem(row, 1, QTableWidgetItem(""))
-        table.setItem(row, 2, self._new_display_apply_item(False))
+        table.setItem(row, 2, QTableWidgetItem(""))
+        table.setItem(row, 3, self._new_display_apply_item(False))
         table.blockSignals(False)
         table.setCurrentCell(row, 0)
         table.scrollToItem(table.item(row, 0))
@@ -1418,7 +1636,8 @@ class MainWindow(QMainWindow):
             ):
                 row = conversion_table.currentRow()
                 col = conversion_table.currentColumn()
-                if row == conversion_table.rowCount() - 1 and col == 1:
+                last_col = conversion_table.columnCount() - 1
+                if row == conversion_table.rowCount() - 1 and col == last_col:
                     self._conv_add_row()
                     return True
         if transcribe_table is not None and obj is transcribe_table and event.type() == QEvent.Type.KeyPress:
@@ -1752,6 +1971,8 @@ class MainWindow(QMainWindow):
     def _stop_all(self) -> None:
         self._running = False
         self._paused = False
+        self._fw_test_guard_active = False
+        self._fw_test_guard_prev_paused = False
         self._active_runtime_cfg = None
         self._pending_cfg = None
         self._last_deferred_live_fields = tuple()
@@ -1770,14 +1991,23 @@ class MainWindow(QMainWindow):
 
     def _send_manual(self) -> None:
         text = self.manual_combo.currentText().strip()
-        if not text:
+        if not self._send_text_to_pipeline(text, "手動"):
             return
+        self.manual_combo.lineEdit().clear()
+
+    def _send_text_to_pipeline(self, text: str, source_label: str) -> bool:
+        text = str(text or "").strip()
+        if not text:
+            return False
         if not self._pipeline_worker:
             self._append_log("[warn] パイプラインが起動していません")
-            return
+            return False
         self._pipeline_worker.send_text(text)
-        self._append_log(f"[手動] {text}")
-        # 履歴に追加（重複除去、先頭に挿入、上限50件）
+        self._append_log(f"[{source_label}] {text}")
+        self._push_manual_history(text)
+        return True
+
+    def _push_manual_history(self, text: str) -> None:
         if text in self._manual_history:
             self._manual_history.remove(text)
         self._manual_history.insert(0, text)
@@ -1788,7 +2018,6 @@ class MainWindow(QMainWindow):
         self.manual_combo.insertItem(0, text)
         while self.manual_combo.count() > 50:
             self.manual_combo.removeItem(self.manual_combo.count() - 1)
-        self.manual_combo.lineEdit().clear()
 
     def _on_pipeline_error(self, stack: str) -> None:
         self._append_log("[error] パイプライン例外")
@@ -1814,3 +2043,4 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------------------------
+

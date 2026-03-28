@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import queue
@@ -50,6 +50,10 @@ class PipelineWorker(QObject):
         self._transcribe_conv_rules: list[dict] = list(cfg.transcribe_conversion_dict or [])
         self._transcribe_proc: Optional[subprocess.Popen] = None
         self._sbv2_proc: Optional[subprocess.Popen] = None
+        self._sbv2_log_tail: deque[str] = deque(maxlen=200)
+        self._sbv2_log_lock = threading.Lock()
+        self._sbv2_last_exit_code: Optional[int] = None
+        self._sbv2_last_exit_at: str = ""
         self._current_proc: Optional[subprocess.Popen] = None
         self._proc_lock = threading.Lock()
         self._external_server: Optional[ThreadingHTTPServer] = None
@@ -120,6 +124,31 @@ class PipelineWorker(QObject):
                 continue
             title_to_indices.setdefault(title, []).append(i)
         return title_to_indices
+
+    def _append_sbv2_log_tail(self, line: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        with self._sbv2_log_lock:
+            self._sbv2_log_tail.append(f"{stamp} {line}")
+
+    def _emit_sbv2_diagnostics(self, reason: str) -> None:
+        proc = self._sbv2_proc
+        url = (self._cfg.sbv2_server_url or "").strip() or "(empty)"
+        if proc is None:
+            self.log.emit(f"[sbv2-diag] reason={reason} proc=none url={url}")
+        else:
+            rc = proc.poll()
+            state = f"running(pid={proc.pid})" if rc is None else f"exited(pid={proc.pid}, rc={rc})"
+            self.log.emit(f"[sbv2-diag] reason={reason} proc={state} url={url}")
+        if self._sbv2_last_exit_code is not None:
+            self.log.emit(
+                f"[sbv2-diag] last_exit code={self._sbv2_last_exit_code} at={self._sbv2_last_exit_at or '(unknown)'}"
+            )
+        with self._sbv2_log_lock:
+            tail = list(self._sbv2_log_tail)[-30:]
+        if tail:
+            self.log.emit(f"[sbv2-diag] tail_lines={len(tail)}")
+            for ln in tail:
+                self.log.emit(f"[sbv2-diag] {ln}")
 
     @staticmethod
     def _strip_video_payload_prefix(text: str) -> str:
@@ -356,7 +385,16 @@ class PipelineWorker(QObject):
                 # 手動テキスト優先
                 try:
                     text = self._text_queue.get_nowait()
-                    self._process_text(text, manual=True)
+                    raw_text = str(text or "").strip()
+                    if not raw_text:
+                        continue
+                    text_grok = self._apply_transcribe_conversion(raw_text, mode="grok")
+                    text_display = self._apply_transcribe_conversion(raw_text, mode="display")
+                    if text_grok != raw_text:
+                        self.log.emit(f"[manual-conv] grok: '{raw_text}' -> '{text_grok}'")
+                    if text_display != raw_text:
+                        self.log.emit(f"[manual-conv] display: '{raw_text}' -> '{text_display}'")
+                    self._process_text(text_grok, manual=True, display_text=text_display)
                 except queue.Empty:
                     pass
 
@@ -566,14 +604,26 @@ class PipelineWorker(QObject):
                 for line in proc.stdout:
                     line = line.rstrip()
                     if line:
+                        self._append_sbv2_log_tail(line)
                         log_emit(f"[sbv2] {line}")
             except Exception:
                 pass
+            finally:
+                rc = proc.poll()
+                if rc is not None:
+                    self._sbv2_last_exit_code = rc
+                    self._sbv2_last_exit_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if self._running:
+                        log_emit(f"[sbv2] server process exited rc={rc}")
+                        self._emit_sbv2_diagnostics("stdout_closed")
         threading.Thread(target=_forward, daemon=True).start()
 
         deadline = time.time() + 300.0
         while time.time() < deadline and self._running:
             if proc.poll() is not None:
+                self._sbv2_last_exit_code = proc.poll()
+                self._sbv2_last_exit_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._emit_sbv2_diagnostics("start_wait_exited")
                 raise RuntimeError("SBV2サーバーが異常終了しました")
             try:
                 with urllib.request.urlopen(health_url, timeout=1.0):
@@ -581,6 +631,7 @@ class PipelineWorker(QObject):
                     return
             except Exception:
                 time.sleep(1.0)
+        self._emit_sbv2_diagnostics("start_wait_timeout")
         raise RuntimeError("SBV2サーバーの起動タイムアウト (300秒)")
 
     def _transcribe_via_server(self, wav: Path) -> dict:
@@ -965,13 +1016,21 @@ class PipelineWorker(QObject):
             p_ret = self._run_cmd(p_cmd, timeout_sec=420.0)
             if p_ret.returncode != 0:
                 raise RuntimeError((p_ret.stderr or p_ret.stdout or "").strip())
+            for ln in (p_ret.stdout or "").splitlines():
+                if "conversion_" in ln:
+                    self.log.emit(f"[tts-conv] {ln}")
             p_json = _last_json_line(p_ret.stdout)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             _save_text(self._cfg.output_dir / "results" / f"{stamp}.json",
                        json.dumps(p_json, ensure_ascii=False, indent=2) + "\n")
             female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
             response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
+            response_send = str(p_json.get("response", response_original)).strip()
             response_display = str(p_json.get("response_display", response_original)).strip()
+            if response_original and response_send == response_original:
+                self.log.emit("[tts-conv] send unchanged (no hit or empty replacement)")
+            if response_original and response_display == response_original:
+                self.log.emit("[tts-conv] display unchanged (display_apply off or no hit)")
             if p_json.get("ok"):
                 if response_display:
                     self._send_subtitle(response_display, wav_name, "StackFemale", hold_seconds=female_hold)
@@ -997,6 +1056,10 @@ class PipelineWorker(QObject):
                 if run_dir.exists():
                     shutil.rmtree(run_dir, ignore_errors=True)
         except Exception as exc:
+            msg = str(exc)
+            lower = msg.lower()
+            if ("10054" in msg) or ("10061" in msg) or ("connection reset" in lower) or ("connection refused" in lower):
+                self._emit_sbv2_diagnostics("pipeline_http_error")
             self.log.emit(f"[error] pipeline {label}: {exc}")
 
 

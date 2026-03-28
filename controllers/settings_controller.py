@@ -43,13 +43,22 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
     conversion_dict = []
     for row in range(window.conversion_table.rowCount()):
         from_item = window.conversion_table.item(row, 0)
-        to_item = window.conversion_table.item(row, 1)
-        display_item = window.conversion_table.item(row, 2)
+        sbv2_to_item = window.conversion_table.item(row, 1)
+        display_to_item = window.conversion_table.item(row, 2)
+        display_item = window.conversion_table.item(row, 3)
         from_str = (from_item.text() if from_item else "").strip()
-        to_str = (to_item.text() if to_item else "").strip()
+        to_sbv2 = (sbv2_to_item.text() if sbv2_to_item else "").strip()
+        to_display = (display_to_item.text() if display_to_item else "").strip()
         if from_str:
             display_apply = bool(display_item and display_item.checkState() == Qt.CheckState.Checked)
-            conversion_dict.append({"from": from_str, "to": to_str, "display_apply": display_apply})
+            conversion_dict.append(
+                {
+                    "from": from_str,
+                    "to_sbv2": to_sbv2,
+                    "to_display": to_display,
+                    "display_apply": display_apply,
+                }
+            )
 
     return AppConfig(
         wav_dir=Path(window.wav_dir_edit.text().strip()).expanduser().resolve(),
@@ -291,8 +300,11 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
             row = window.conversion_table.rowCount()
             window.conversion_table.insertRow(row)
             window.conversion_table.setItem(row, 0, QTableWidgetItem(entry.get("from", "")))
-            window.conversion_table.setItem(row, 1, QTableWidgetItem(entry.get("to", "")))
-            window.conversion_table.setItem(row, 2, window._new_display_apply_item(bool(entry.get("display_apply", False))))
+            to_sbv2 = str(entry.get("to_sbv2", entry.get("to_grok", entry.get("to", ""))))
+            to_display = str(entry.get("to_display", entry.get("to", "")))
+            window.conversion_table.setItem(row, 1, QTableWidgetItem(to_sbv2))
+            window.conversion_table.setItem(row, 2, QTableWidgetItem(to_display))
+            window.conversion_table.setItem(row, 3, window._new_display_apply_item(bool(entry.get("display_apply", False))))
         window._model_presets = [p for p in data.get("model_presets", []) if isinstance(p, dict) and p.get("name")]
         window._refresh_preset_ui()
         history = data.get("manual_history", [])
@@ -302,4 +314,3 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
             window.manual_combo.addItem(h)
     finally:
         window._loading_config = False
-

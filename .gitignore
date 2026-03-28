@@ -11,3 +11,5 @@ venv/
 test_uc.py
 CODEBASE_STATE.md
 *.ps1
+test2/
+test/
