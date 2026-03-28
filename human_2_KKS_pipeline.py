@@ -40,6 +40,12 @@ from PyQt6.QtWidgets import (
 
 from config.constants import DEFAULT_SOURCE_MODE, MUTEX_NAME
 from config.models import AppConfig
+from controllers.runtime_controller import (
+    apply_live_settings as _apply_live_settings_impl,
+    deferred_live_fields as _deferred_live_fields_impl,
+    on_any_setting_changed as _on_any_setting_changed_impl,
+    on_live_setting_changed as _on_live_setting_changed_impl,
+)
 from core.io_utils import (
     last_json_line as _last_json_line,
     save_text as _save_text,
@@ -1407,97 +1413,16 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _deferred_live_fields(cfg_prev: AppConfig, cfg_now: AppConfig) -> list[str]:
-        fields: list[str] = []
-        if cfg_prev.wav_dir != cfg_now.wav_dir:
-            fields.append("wav_dir")
-        if cfg_prev.faster_python != cfg_now.faster_python:
-            fields.append("faster_python")
-        if cfg_prev.faster_model != cfg_now.faster_model:
-            fields.append("faster_model")
-        if cfg_prev.faster_device != cfg_now.faster_device:
-            fields.append("faster_device")
-        if cfg_prev.faster_compute != cfg_now.faster_compute:
-            fields.append("faster_compute")
-        if cfg_prev.faster_language != cfg_now.faster_language:
-            fields.append("faster_language")
-        if cfg_prev.faster_beam != cfg_now.faster_beam:
-            fields.append("faster_beam")
-        if cfg_prev.transcribe_server_port != cfg_now.transcribe_server_port:
-            fields.append("transcribe_server_port")
-        if cfg_prev.sbv2_root != cfg_now.sbv2_root:
-            fields.append("sbv2_root")
-        if cfg_prev.sbv2_server_url != cfg_now.sbv2_server_url:
-            fields.append("sbv2_server_url")
-        if cfg_prev.sbv2_server_auto_start != cfg_now.sbv2_server_auto_start:
-            fields.append("sbv2_server_auto_start")
-        if cfg_prev.external_text_enabled != cfg_now.external_text_enabled:
-            fields.append("external_text_enabled")
-        if cfg_prev.external_text_host != cfg_now.external_text_host:
-            fields.append("external_text_host")
-        if cfg_prev.external_text_port != cfg_now.external_text_port:
-            fields.append("external_text_port")
-        if cfg_prev.external_text_endpoint != cfg_now.external_text_endpoint:
-            fields.append("external_text_endpoint")
-        if cfg_prev.external_text_token != cfg_now.external_text_token:
-            fields.append("external_text_token")
-        if cfg_prev.external_text_dedupe_max != cfg_now.external_text_dedupe_max:
-            fields.append("external_text_dedupe_max")
-        if cfg_prev.device != cfg_now.device:
-            fields.append("device")
-        return fields
+        return _deferred_live_fields_impl(cfg_prev, cfg_now)
 
     def _apply_live_settings(self, cfg: AppConfig) -> None:
-        prev = self._active_runtime_cfg
-        self._active_runtime_cfg = cfg
-        if not self._running:
-            self._last_deferred_live_fields = tuple()
-            return
-
-        if self._pipeline_worker is None:
-            self._pending_cfg = cfg
-            return
-
-        self._pipeline_worker.update_runtime_config(cfg)
-
-        if self._recorder_worker is not None:
-            self._recorder_worker.update_live_config(
-                output_dir=cfg.wav_dir,
-                threshold_dbfs=cfg.threshold_dbfs,
-                silence_seconds=cfg.silence_seconds,
-                min_duration_seconds=cfg.min_duration_seconds,
-                pre_roll_seconds=cfg.pre_roll_seconds,
-                post_roll_seconds=cfg.post_roll_seconds,
-                device=cfg.device,
-            )
-
-        need_rec = self._is_recorder_needed(cfg)
-        has_rec = self._recorder_worker is not None
-        if need_rec and (not has_rec) and (not self._paused):
-            self._start_recorder(cfg)
-            self._append_log("[live] 録音ワーカーを開始")
-        elif (not need_rec) and has_rec:
-            self._stop_recorder()
-            self._append_log("[live] source_mode=external: 録音ワーカー停止")
-
-        if prev is None:
-            self._last_deferred_live_fields = tuple()
-            return
-
-        deferred = tuple(self._deferred_live_fields(prev, cfg))
-        if deferred and deferred != self._last_deferred_live_fields:
-            self._append_log("[live] 反映保留(再起動時): " + ", ".join(deferred))
-        self._last_deferred_live_fields = deferred
+        _apply_live_settings_impl(self, cfg)
 
     def _on_live_setting_changed(self, *_args) -> None:
-        if self._loading_config:
-            return
-        cfg = self._save_config()
-        if cfg is None:
-            return
-        self._apply_live_settings(cfg)
+        _on_live_setting_changed_impl(self, *_args)
 
     def _on_any_setting_changed(self, *_args) -> None:
-        self._on_live_setting_changed(*_args)
+        _on_any_setting_changed_impl(self, *_args)
 
     def _install_autosave_hooks(self) -> None:
         # 録音設定
