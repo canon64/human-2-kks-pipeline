@@ -38,15 +38,26 @@
 
 ---
 
-## 3. 最短セットアップ
+## 3. 初回インストール（配布版ユーザー向け）
 
-プロジェクト直下で以下を実行します。
+最初だけ、次の順で実行してください。
 
-1. `setup.bat`
-2. `launch.bat`
+1. `setup.bat` を実行する  
+   必要なPythonとライブラリの準備を自動で行います。
+2. `launch.bat` を実行する  
+   GUIが起動します。
 
-`setup.bat` は portable Python (`python/`) を自動構築し、`requirements.txt` を導入します。  
-`launch.bat` は `python/python.exe` を使ってGUIを起動します。
+2回目以降は `launch.bat` だけで起動できます。  
+`setup.bat` は、起動できなくなったときの再セットアップ用です。
+
+### 前の版から引き継いで使う場合
+
+1. 新版を別フォルダに展開
+2. 旧版の `config.json` を新版フォルダへコピー
+3. `launch.bat` を実行
+4. 起動後に必要な項目だけ確認して保存
+
+※ 旧 `config.json` はそのまま読み込めます。
 
 ---
 
@@ -238,4 +249,3 @@
 - リリース本文に比較URLを必ず記載:
   - `https://github.com/canon64/human-2-kks-pipeline/compare/v1.0.0...v1.1.0`
 - ユーザーには「新版展開 + 旧 `config.json` 引き継ぎ」を案内
-
