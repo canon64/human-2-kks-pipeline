@@ -32,7 +32,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -193,6 +193,42 @@ class RecorderWorker(QObject):
     def stop(self) -> None:
         if self._recorder is not None:
             self._recorder.stop()
+
+    def update_live_config(
+        self,
+        *,
+        output_dir: Path,
+        threshold_dbfs: float,
+        silence_seconds: float,
+        min_duration_seconds: float,
+        pre_roll_seconds: float,
+        post_roll_seconds: float,
+        device: Optional[int],
+    ) -> None:
+        # Keep RecorderConfig in sync.
+        self._config.output_dir = output_dir
+        self._config.threshold_dbfs = threshold_dbfs
+        self._config.silence_seconds = silence_seconds
+        self._config.min_duration_seconds = min_duration_seconds
+        self._config.pre_roll_seconds = pre_roll_seconds
+        self._config.post_roll_seconds = post_roll_seconds
+        self._config.device = device
+
+        # Apply values immediately when recorder is already running.
+        if self._recorder is None:
+            return
+
+        rec = self._recorder
+        rec.cfg.output_dir = output_dir
+        rec.cfg.threshold_dbfs = threshold_dbfs
+        rec.cfg.silence_seconds = silence_seconds
+        rec.cfg.min_duration_seconds = min_duration_seconds
+        rec.cfg.pre_roll_seconds = pre_roll_seconds
+        rec.cfg.post_roll_seconds = post_roll_seconds
+        rec.cfg.device = device
+        rec.silence_limit_samples = int(silence_seconds * rec.cfg.sample_rate)
+        rec.pre_roll_limit_samples = int(pre_roll_seconds * rec.cfg.sample_rate)
+        rec.post_roll_keep_samples = int(post_roll_seconds * rec.cfg.sample_rate)
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +860,18 @@ class PipelineWorker(QObject):
         with self._transcribe_conv_lock:
             self._transcribe_conv_rules = list(rules or [])
 
+    def update_runtime_config(self, cfg: AppConfig) -> None:
+        prev_video_metadata = self._cfg.video_metadata_path
+        self._cfg = cfg
+        self.update_transcribe_conv(cfg.transcribe_conversion_dict)
+        if prev_video_metadata != cfg.video_metadata_path:
+            with self._song_kana_lock:
+                self._video_metadata = self._load_json_safe(cfg.video_metadata_path)
+                self._title_to_indices = self._build_title_to_indices()
+                self._sorted_titles = sorted(self._title_to_indices.keys(), key=len, reverse=True)
+                self._kana_rules = self._build_kana_rules()
+            self.log.emit(f"[live] video_metadata reloaded: {cfg.video_metadata_path or '(none)'}")
+
     def _apply_transcribe_conversion(self, text: str) -> str:
         converted = text
         applied = 0
@@ -1199,6 +1247,9 @@ class MainWindow(QMainWindow):
         self._pipeline_worker: Optional[PipelineWorker] = None
         self._running = False
         self._paused = False
+        self._active_runtime_cfg: Optional[AppConfig] = None
+        self._pending_cfg: Optional[AppConfig] = None
+        self._last_deferred_live_fields: tuple[str, ...] = tuple()
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
@@ -1572,29 +1623,19 @@ class MainWindow(QMainWindow):
         table.setItem(row, 1, QTableWidgetItem(""))
         table.blockSignals(False)
         table.editItem(table.item(row, 0))
-        self._save_config()
+        self._on_live_setting_changed()
 
     def _transcribe_conv_del_row(self) -> None:
         table = self.transcribe_conversion_table
         rows = sorted({idx.row() for idx in table.selectedIndexes()}, reverse=True)
         for row in rows:
             table.removeRow(row)
-        self._save_config()
+        self._on_live_setting_changed()
 
     def _on_transcribe_conv_item_changed(self, _item: QTableWidgetItem) -> None:
         if self._loading_config:
             return
-        self._save_config()
-        if self._pipeline_worker is not None:
-            rules = []
-            for row in range(self.transcribe_conversion_table.rowCount()):
-                from_item = self.transcribe_conversion_table.item(row, 0)
-                to_item = self.transcribe_conversion_table.item(row, 1)
-                from_str = (from_item.text() if from_item else "").strip()
-                to_str = (to_item.text() if to_item else "").strip()
-                if from_str:
-                    rules.append({"from": from_str, "to": to_str})
-            self._pipeline_worker.update_transcribe_conv(rules)
+        self._on_live_setting_changed()
 
     def _build_selenium_tab(self) -> None:
         tab = QWidget()
@@ -1859,10 +1900,99 @@ class MainWindow(QMainWindow):
     def _append_log(self, msg: str) -> None:
         self.log_text.appendPlainText(msg)
 
-    def _on_any_setting_changed(self, *_args) -> None:
+    @staticmethod
+    def _deferred_live_fields(cfg_prev: AppConfig, cfg_now: AppConfig) -> list[str]:
+        fields: list[str] = []
+        if cfg_prev.wav_dir != cfg_now.wav_dir:
+            fields.append("wav_dir")
+        if cfg_prev.faster_python != cfg_now.faster_python:
+            fields.append("faster_python")
+        if cfg_prev.faster_model != cfg_now.faster_model:
+            fields.append("faster_model")
+        if cfg_prev.faster_device != cfg_now.faster_device:
+            fields.append("faster_device")
+        if cfg_prev.faster_compute != cfg_now.faster_compute:
+            fields.append("faster_compute")
+        if cfg_prev.faster_language != cfg_now.faster_language:
+            fields.append("faster_language")
+        if cfg_prev.faster_beam != cfg_now.faster_beam:
+            fields.append("faster_beam")
+        if cfg_prev.transcribe_server_port != cfg_now.transcribe_server_port:
+            fields.append("transcribe_server_port")
+        if cfg_prev.sbv2_root != cfg_now.sbv2_root:
+            fields.append("sbv2_root")
+        if cfg_prev.sbv2_server_url != cfg_now.sbv2_server_url:
+            fields.append("sbv2_server_url")
+        if cfg_prev.sbv2_server_auto_start != cfg_now.sbv2_server_auto_start:
+            fields.append("sbv2_server_auto_start")
+        if cfg_prev.external_text_enabled != cfg_now.external_text_enabled:
+            fields.append("external_text_enabled")
+        if cfg_prev.external_text_host != cfg_now.external_text_host:
+            fields.append("external_text_host")
+        if cfg_prev.external_text_port != cfg_now.external_text_port:
+            fields.append("external_text_port")
+        if cfg_prev.external_text_endpoint != cfg_now.external_text_endpoint:
+            fields.append("external_text_endpoint")
+        if cfg_prev.external_text_token != cfg_now.external_text_token:
+            fields.append("external_text_token")
+        if cfg_prev.external_text_dedupe_max != cfg_now.external_text_dedupe_max:
+            fields.append("external_text_dedupe_max")
+        if cfg_prev.device != cfg_now.device:
+            fields.append("device")
+        return fields
+
+    def _apply_live_settings(self, cfg: AppConfig) -> None:
+        prev = self._active_runtime_cfg
+        self._active_runtime_cfg = cfg
+        if not self._running:
+            self._last_deferred_live_fields = tuple()
+            return
+
+        if self._pipeline_worker is None:
+            self._pending_cfg = cfg
+            return
+
+        self._pipeline_worker.update_runtime_config(cfg)
+
+        if self._recorder_worker is not None:
+            self._recorder_worker.update_live_config(
+                output_dir=cfg.wav_dir,
+                threshold_dbfs=cfg.threshold_dbfs,
+                silence_seconds=cfg.silence_seconds,
+                min_duration_seconds=cfg.min_duration_seconds,
+                pre_roll_seconds=cfg.pre_roll_seconds,
+                post_roll_seconds=cfg.post_roll_seconds,
+                device=cfg.device,
+            )
+
+        need_rec = self._is_recorder_needed(cfg)
+        has_rec = self._recorder_worker is not None
+        if need_rec and (not has_rec) and (not self._paused):
+            self._start_recorder(cfg)
+            self._append_log("[live] 録音ワーカーを開始")
+        elif (not need_rec) and has_rec:
+            self._stop_recorder()
+            self._append_log("[live] source_mode=external: 録音ワーカー停止")
+
+        if prev is None:
+            self._last_deferred_live_fields = tuple()
+            return
+
+        deferred = tuple(self._deferred_live_fields(prev, cfg))
+        if deferred and deferred != self._last_deferred_live_fields:
+            self._append_log("[live] 反映保留(再起動時): " + ", ".join(deferred))
+        self._last_deferred_live_fields = deferred
+
+    def _on_live_setting_changed(self, *_args) -> None:
         if self._loading_config:
             return
-        self._save_config()
+        cfg = self._save_config()
+        if cfg is None:
+            return
+        self._apply_live_settings(cfg)
+
+    def _on_any_setting_changed(self, *_args) -> None:
+        self._on_live_setting_changed(*_args)
 
     def _install_autosave_hooks(self) -> None:
         # 録音設定
@@ -1921,6 +2051,9 @@ class MainWindow(QMainWindow):
         # フィルター / 変換
         self.filter_edit.textChanged.connect(self._on_any_setting_changed)
         self.conversion_table.itemChanged.connect(self._on_any_setting_changed)
+        self.chrome_profile_combo.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.chrome_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.chrome_headless_chk.toggled.connect(self._on_any_setting_changed)
 
     @staticmethod
     def _is_recorder_needed(cfg: AppConfig) -> bool:
@@ -2010,11 +2143,12 @@ class MainWindow(QMainWindow):
             conversion_dict=conversion_dict,
         )
 
-    def _save_config(self) -> None:
-        try:
-            cfg = self._build_config()
-        except Exception:
-            return
+    def _save_config(self, cfg: Optional[AppConfig] = None) -> Optional[AppConfig]:
+        if cfg is None:
+            try:
+                cfg = self._build_config()
+            except Exception:
+                return None
         data = {
             "device_name": self.device_combo.currentText(),
             "wav_dir": str(cfg.wav_dir), "threshold_dbfs": cfg.threshold_dbfs,
@@ -2058,6 +2192,7 @@ class MainWindow(QMainWindow):
             "chrome_profile": self.chrome_profile_combo.currentData() or "",
         }
         CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return cfg
 
     def _load_config(self) -> None:
         if not CONFIG_FILE.exists():
@@ -2250,7 +2385,7 @@ class MainWindow(QMainWindow):
             try:
                 cfg = self._build_config()
             except Exception as exc:
-                QMessageBox.critical(self, "設定エラー", str(exc))
+                self._append_log(f"[error] {exc}")
                 return
             if self._is_recorder_needed(cfg):
                 self._start_recorder(cfg)
@@ -2260,11 +2395,13 @@ class MainWindow(QMainWindow):
         try:
             cfg = self._build_config()
         except Exception as exc:
-            QMessageBox.critical(self, "設定エラー", str(exc))
+            self._append_log(f"[error] {exc}")
             return
-        self._save_config()
+        self._save_config(cfg)
         self._running = True
         self._paused = False
+        self._active_runtime_cfg = cfg
+        self._last_deferred_live_fields = tuple()
         self.start_btn.setText("■ 停止")
         self.pause_btn.setEnabled(True)
 
@@ -2311,16 +2448,25 @@ class MainWindow(QMainWindow):
                 self.chrome_launch_btn.setEnabled(False)
         else:
             self._append_log("[selenium] プロファイル未選択、スキップ")
+        if self._pending_cfg is None:
+            self._append_log("[error] pending config missing")
+            return
         self._continue_start_pipeline(self._pending_cfg)
+        self._pending_cfg = None
 
     def _on_selenium_worker_error(self, err) -> None:
         self._append_log(f"[selenium] 起動失敗: {err}")
+        if self._pending_cfg is None:
+            self._append_log("[error] pending config missing")
+            return
         self._continue_start_pipeline(self._pending_cfg)
+        self._pending_cfg = None
 
     def _continue_start_pipeline(self, cfg: "AppConfig") -> None:
         # パイプライン起動
         self._pipeline_thread = QThread(self)
         self._pipeline_worker = PipelineWorker(cfg)
+        self._active_runtime_cfg = cfg
         self._pipeline_worker.moveToThread(self._pipeline_thread)
         self._pipeline_thread.started.connect(self._pipeline_worker.run)
         self._pipeline_worker.log.connect(self._append_log)
@@ -2374,6 +2520,9 @@ class MainWindow(QMainWindow):
     def _stop_all(self) -> None:
         self._running = False
         self._paused = False
+        self._active_runtime_cfg = None
+        self._pending_cfg = None
+        self._last_deferred_live_fields = tuple()
         self.start_btn.setText("▶ 開始")
         self.pause_btn.setEnabled(False)
         self.pause_btn.setText("⏸ 一時停止")
@@ -2412,7 +2561,6 @@ class MainWindow(QMainWindow):
     def _on_pipeline_error(self, stack: str) -> None:
         self._append_log("[error] パイプライン例外")
         self._append_log(stack)
-        QMessageBox.critical(self, "パイプラインエラー", "例外が発生しました。ログを確認してください。")
 
     def closeEvent(self, event) -> None:
         try:
