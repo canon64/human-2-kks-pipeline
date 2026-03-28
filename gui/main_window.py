@@ -93,11 +93,19 @@ class _ConversionTableDelegate(QStyledItemDelegate):
                 if isinstance(table, QTableWidget):
                     row = table.currentRow()
                     col = table.currentColumn()
-                    last_text_col = max(0, table.columnCount() - 2)
-                    if row == table.rowCount() - 1 and col == last_text_col:
+                    if row < 0 or col < 0:
+                        return super().eventFilter(editor, event)
+                    last_col = max(0, table.columnCount() - 1)
+                    if col == last_col:
                         self.commitData.emit(editor)
                         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
-                        self.request_new_row.emit()
+                        if row == table.rowCount() - 1:
+                            self.request_new_row.emit()
+                        else:
+                            next_item = table.item(row + 1, 0)
+                            if next_item is not None:
+                                table.setCurrentCell(row + 1, 0)
+                                table.editItem(next_item)
                         return True
         return super().eventFilter(editor, event)
 
@@ -166,6 +174,7 @@ class MainWindow(QMainWindow):
         self._loading_config = False
         self._clipboard_shortcuts: list[QShortcut] = []
         self._conversion_table_delegate: Optional[_ConversionTableDelegate] = None
+        self._transcribe_conversion_table_delegate: Optional[_ConversionTableDelegate] = None
 
         self._build_ui()
         self._load_config()
@@ -1136,7 +1145,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _new_display_apply_item(checked: bool) -> QTableWidgetItem:
         item = QTableWidgetItem("")
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
         item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         return item
 
@@ -1153,6 +1162,9 @@ class MainWindow(QMainWindow):
         self.transcribe_conversion_table.setColumnWidth(1, 220)
         self.transcribe_conversion_table.setColumnWidth(2, 220)
         self.transcribe_conversion_table.setColumnWidth(3, 110)
+        self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table)
+        self._transcribe_conversion_table_delegate.request_new_row.connect(self._transcribe_conv_add_row)
+        self.transcribe_conversion_table.setItemDelegate(self._transcribe_conversion_table_delegate)
         self.transcribe_conversion_table.itemChanged.connect(self._on_transcribe_conv_item_changed)
         self.transcribe_conversion_table.installEventFilter(self)
         layout.addWidget(self.transcribe_conversion_table, 1)
@@ -1637,8 +1649,14 @@ class MainWindow(QMainWindow):
                 row = conversion_table.currentRow()
                 col = conversion_table.currentColumn()
                 last_col = conversion_table.columnCount() - 1
-                if row == conversion_table.rowCount() - 1 and col == last_col:
-                    self._conv_add_row()
+                if row >= 0 and col == last_col:
+                    if row == conversion_table.rowCount() - 1:
+                        self._conv_add_row()
+                    else:
+                        next_item = conversion_table.item(row + 1, 0)
+                        if next_item is not None:
+                            conversion_table.setCurrentCell(row + 1, 0)
+                            conversion_table.editItem(next_item)
                     return True
         if transcribe_table is not None and obj is transcribe_table and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Tab and not (
@@ -1647,8 +1665,14 @@ class MainWindow(QMainWindow):
                 row = transcribe_table.currentRow()
                 col = transcribe_table.currentColumn()
                 last_col = transcribe_table.columnCount() - 1
-                if row == transcribe_table.rowCount() - 1 and col == last_col:
-                    self._transcribe_conv_add_row()
+                if row >= 0 and col == last_col:
+                    if row == transcribe_table.rowCount() - 1:
+                        self._transcribe_conv_add_row()
+                    else:
+                        next_item = transcribe_table.item(row + 1, 0)
+                        if next_item is not None:
+                            transcribe_table.setCurrentCell(row + 1, 0)
+                            transcribe_table.editItem(next_item)
                     return True
         return super().eventFilter(obj, event)
 
