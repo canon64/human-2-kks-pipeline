@@ -31,6 +31,31 @@ def _split_response_lines(response: str) -> list[str]:
     return [compact] if compact else []
 
 
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _apply_conversion_rules(response: str, rules: list[dict[str, Any]], display_only: bool = False) -> str:
+    converted = response
+    for entry in rules:
+        if not isinstance(entry, dict):
+            continue
+        if display_only and not _parse_bool(entry.get("display_apply", False)):
+            continue
+        from_str = str(entry.get("from", ""))
+        to_str = str(entry.get("to", ""))
+        if not from_str:
+            continue
+        converted = converted.replace(from_str, to_str)
+    return converted
+
+
 def _pick_model_file(model_dir: Path, explicit_model_file: str | None) -> Path:
     model_files = [p for p in model_dir.iterdir() if p.is_file() and p.suffix in [".safetensors", ".pth", ".pt"]]
     if not model_files:
@@ -315,17 +340,14 @@ def main() -> int:
 
         # 変換辞書の適用
         response_original = response  # 変換前のGrokレスポンスを保存
-        conversion_dict = []
+        conversion_dict: list[dict[str, Any]] = []
         if args.conversion_json.strip():
             try:
                 conversion_dict = json.loads(args.conversion_json)
             except Exception:
                 logger.warning("conversion_json parse failed, skipping")
-        for entry in conversion_dict:
-            from_str = entry.get("from", "")
-            to_str = entry.get("to", "")
-            if from_str:
-                response = response.replace(from_str, to_str)
+        response = _apply_conversion_rules(response_original, conversion_dict, display_only=False)
+        response_display = _apply_conversion_rules(response_original, conversion_dict, display_only=True)
 
         lines = _split_response_lines(response)
         if not lines:
@@ -468,6 +490,7 @@ def main() -> int:
                 "error": "",
                 "response": response,
                 "response_original": response_original,
+                "response_display": response_display,
                 "line_count": len(lines),
                 "line_texts": lines,
                 "line_wavs": [str(p) for p in part_paths],
@@ -489,6 +512,7 @@ def main() -> int:
                 "ok": False,
                 "error": str(exc),
                 "response": "",
+                "response_display": "",
                 "line_count": 0,
                 "line_texts": [],
                 "line_wavs": [],

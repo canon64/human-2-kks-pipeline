@@ -24,15 +24,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
+import sounddevice as sd
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from voice_gate_recorder import RecorderConfig, VoiceGateRecorder, get_input_devices
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+    QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -247,6 +250,21 @@ class _SeleniumWorker(QThread):
         try:
             status, driver = self._func()
             self.result_ready.emit(status or "skipped", driver)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+
+class _TaskWorker(QThread):
+    result_ready = pyqtSignal(object)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, func):
+        super().__init__()
+        self._func = func
+
+    def run(self):
+        try:
+            self.result_ready.emit(self._func())
         except Exception as e:
             self.error_occurred.emit(str(e))
 
@@ -1171,25 +1189,26 @@ class PipelineWorker(QObject):
             _save_text(self._cfg.output_dir / "results" / f"{stamp}.json",
                        json.dumps(p_json, ensure_ascii=False, indent=2) + "\n")
             female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
+            response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
+            response_display = str(p_json.get("response_display", response_original)).strip()
             if p_json.get("ok"):
-                response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
-                if response_original:
-                    self._send_subtitle(response_original, wav_name, "StackFemale", hold_seconds=female_hold)
+                if response_display:
+                    self._send_subtitle(response_display, wav_name, "StackFemale", hold_seconds=female_hold)
                 self.log.emit(f"[done] {label}")
             else:
                 self.log.emit(f"[error] pipeline: {p_json.get('error', '')}")
                 response_original = ""
+                response_display = ""
             # Grokの元レスポンス（変換前）から「今から流すね♡ ○○」を検出 → 動画切り替え
-            response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
             matched_indices = self._find_video_indices_from_response(response_original)
             if matched_indices:
                 self._increment_play_counts(matched_indices)
                 delay = female_hold if female_hold else 0.0
                 self._schedule_video_switch(matched_indices, delay)
             # 生テキストをC#へ送信 → C#側でcoord/clothes検出・遅延実行
-            if response_original:
+            if response_display:
                 delay = female_hold if female_hold else 0.0
-                self._schedule_response_text(response_original, self._cfg.main_index, delay)
+                self._schedule_response_text(response_display, self._cfg.main_index, delay)
             # TTS出力フォルダを削除
             merged_wav = p_json.get("merged_wav", "")
             if merged_wav:
@@ -1250,6 +1269,12 @@ class MainWindow(QMainWindow):
         self._active_runtime_cfg: Optional[AppConfig] = None
         self._pending_cfg: Optional[AppConfig] = None
         self._last_deferred_live_fields: tuple[str, ...] = tuple()
+        self._fw_test_stream = None
+        self._fw_test_chunks: list[np.ndarray] = []
+        self._fw_test_sr = 16000
+        self._fw_test_worker: Optional[_TaskWorker] = None
+        self._sbv2_test_worker: Optional[_TaskWorker] = None
+        self._sbv2_test_last_wav: Optional[Path] = None
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
@@ -1270,6 +1295,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs)
         self._build_recorder_tab()
         self._build_pipeline_tab()
+        self._build_test_tab()
         self._build_selenium_tab()
         self._build_transcribe_conversion_tab()
         self._build_filter_tab()
@@ -1551,16 +1577,422 @@ class MainWindow(QMainWindow):
         ext = QWidget(); ext.setLayout(ext_row)
         form.addRow("外部テキスト受信", ext)
 
+    def _build_test_tab(self) -> None:
+        tab = QWidget()
+        self.tabs.addTab(tab, "テスト")
+        layout = QVBoxLayout(tab)
+
+        fw_group = QGroupBox("FasterWhisper テスト")
+        fw_layout = QVBoxLayout(fw_group)
+        fw_layout.addWidget(QLabel("ボタンを押している間だけ録音。離すと文字起こしします。"))
+        self.fw_test_hold_btn = QPushButton("押して話す（離して判定）")
+        self.fw_test_hold_btn.pressed.connect(self._fw_test_start_record)
+        self.fw_test_hold_btn.released.connect(self._fw_test_stop_record)
+        fw_layout.addWidget(self.fw_test_hold_btn)
+        self.fw_test_status_label = QLabel("待機")
+        fw_layout.addWidget(self.fw_test_status_label)
+        self.fw_test_result_edit = QPlainTextEdit()
+        self.fw_test_result_edit.setReadOnly(True)
+        self.fw_test_result_edit.setPlaceholderText("ここに文字起こし結果が表示されます。")
+        fw_layout.addWidget(self.fw_test_result_edit, 1)
+        layout.addWidget(fw_group)
+
+        sbv2_group = QGroupBox("SBV2 テスト")
+        sbv2_layout = QVBoxLayout(sbv2_group)
+        self.sbv2_test_text_edit = QPlainTextEdit()
+        self.sbv2_test_text_edit.setPlaceholderText("SBV2で再生したいテキストを入力")
+        sbv2_layout.addWidget(self.sbv2_test_text_edit)
+
+        face_row = QHBoxLayout()
+        self.sbv2_test_keep_face_chk = QCheckBox("現在表情維持")
+        self.sbv2_test_keep_face_chk.setChecked(True)
+        self.sbv2_test_keep_face_chk.toggled.connect(self._on_sbv2_test_keep_face_toggled)
+        self.sbv2_test_face_spin = _NoWheelAlwaysSpinBox()
+        self.sbv2_test_face_spin.setRange(-1, 500)
+        self.sbv2_test_face_spin.setValue(-1)
+        self.sbv2_test_face_spin.setEnabled(False)
+        self.sbv2_test_face_spin.valueChanged.connect(self._on_sbv2_test_face_changed)
+        face_row.addWidget(self.sbv2_test_keep_face_chk)
+        face_row.addWidget(QLabel("face"))
+        face_row.addWidget(self.sbv2_test_face_spin)
+        face_row.addStretch()
+        sbv2_layout.addLayout(face_row)
+
+        vol_row = QHBoxLayout()
+        vol_row.addWidget(QLabel("音量"))
+        self.sbv2_test_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sbv2_test_volume_slider.setRange(0, 100)
+        self.sbv2_test_volume_slider.setValue(100)
+        self.sbv2_test_volume_slider.valueChanged.connect(self._on_sbv2_test_volume_changed)
+        self.sbv2_test_volume_label = QLabel("100%")
+        vol_row.addWidget(self.sbv2_test_volume_slider, 1)
+        vol_row.addWidget(self.sbv2_test_volume_label)
+        sbv2_layout.addLayout(vol_row)
+
+        btn_row = QHBoxLayout()
+        self.sbv2_test_run_btn = QPushButton("SBV2テスト実行")
+        self.sbv2_test_run_btn.clicked.connect(self._run_sbv2_test)
+        self.sbv2_test_play_btn = QPushButton("最後の音声をGUI再生")
+        self.sbv2_test_play_btn.clicked.connect(self._play_last_sbv2_test)
+        btn_row.addWidget(self.sbv2_test_run_btn)
+        btn_row.addWidget(self.sbv2_test_play_btn)
+        btn_row.addStretch()
+        sbv2_layout.addLayout(btn_row)
+
+        self.sbv2_test_status_label = QLabel("待機")
+        sbv2_layout.addWidget(self.sbv2_test_status_label)
+        layout.addWidget(sbv2_group, 1)
+
+    def _on_sbv2_test_keep_face_toggled(self, checked: bool) -> None:
+        self.sbv2_test_face_spin.setEnabled(not checked)
+
+    def _on_sbv2_test_face_changed(self, value: int) -> None:
+        if value >= 0 and self.sbv2_test_keep_face_chk.isChecked():
+            self.sbv2_test_keep_face_chk.setChecked(False)
+
+    def _on_sbv2_test_volume_changed(self, value: int) -> None:
+        self.sbv2_test_volume_label.setText(f"{value}%")
+
+    def _fw_test_audio_callback(self, indata, frames, time_info, status) -> None:
+        if status:
+            return
+        self._fw_test_chunks.append(indata.copy())
+
+    @staticmethod
+    def _write_wav_float32_mono(path: Path, pcm: np.ndarray, sample_rate: int) -> None:
+        pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
+        clipped = np.clip(pcm, -1.0, 1.0)
+        int16_pcm = (clipped * 32767.0).astype(np.int16)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(int16_pcm.tobytes())
+
+    def _fw_test_start_record(self) -> None:
+        if self._fw_test_worker is not None and self._fw_test_worker.isRunning():
+            self.fw_test_status_label.setText("文字起こし中...")
+            return
+        if self._fw_test_stream is not None:
+            return
+        self._fw_test_chunks = []
+        device = self.device_combo.currentData()
+        try:
+            self._fw_test_stream = sd.InputStream(
+                samplerate=self._fw_test_sr,
+                channels=1,
+                dtype="float32",
+                device=device,
+                callback=self._fw_test_audio_callback,
+            )
+            self._fw_test_stream.start()
+            self.fw_test_hold_btn.setText("録音中（離して停止）")
+            self.fw_test_status_label.setText("録音中...")
+        except Exception as exc:
+            self._fw_test_stream = None
+            self.fw_test_hold_btn.setText("押して話す（離して判定）")
+            self.fw_test_status_label.setText(f"録音失敗: {exc}")
+            self._append_log(f"[fw-test] record start failed: {exc}")
+
+    def _fw_test_stop_record(self) -> None:
+        if self._fw_test_stream is None:
+            return
+        try:
+            self._fw_test_stream.stop()
+            self._fw_test_stream.close()
+        except Exception:
+            pass
+        finally:
+            self._fw_test_stream = None
+
+        self.fw_test_hold_btn.setText("押して話す（離して判定）")
+        if not self._fw_test_chunks:
+            self.fw_test_status_label.setText("録音データなし")
+            return
+
+        pcm = np.concatenate(self._fw_test_chunks, axis=0).reshape(-1)
+        self._fw_test_chunks = []
+        duration = len(pcm) / float(self._fw_test_sr)
+        if duration < 0.2:
+            self.fw_test_status_label.setText("録音が短すぎます")
+            return
+
+        out_root = Path(self.output_dir_edit.text().strip()).expanduser().resolve() / "tests" / "fasterwhisper"
+        wav_path = out_root / f"hold_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]}.wav"
+        self._write_wav_float32_mono(wav_path, pcm, self._fw_test_sr)
+        self.fw_test_status_label.setText("文字起こし中...")
+        self._append_log(f"[fw-test] recorded {wav_path.name} ({duration:.2f}s)")
+        self._fw_test_worker = _TaskWorker(lambda: self._run_fw_test_transcribe(wav_path))
+        self._fw_test_worker.result_ready.connect(self._on_fw_test_transcribe_done)
+        self._fw_test_worker.error_occurred.connect(self._on_fw_test_transcribe_error)
+        self._fw_test_worker.start()
+
+    def _run_fw_test_transcribe(self, wav_path: Path) -> dict:
+        cfg = self._build_config()
+        script = Path(__file__).resolve().parent / "run_transcribe_one_wav.py"
+        if not script.exists():
+            raise FileNotFoundError(f"script not found: {script}")
+        cmd = [
+            str(cfg.faster_python), str(script),
+            "--audio", str(wav_path),
+            "--model", cfg.faster_model,
+            "--device", cfg.faster_device,
+            "--compute-type", cfg.faster_compute,
+            "--language", cfg.faster_language,
+            "--beam-size", str(cfg.faster_beam),
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=420,
+            env=_with_utf8_env(),
+        )
+        payload = _last_json_line(proc.stdout or "")
+        payload["audio_path"] = str(wav_path)
+        payload["returncode"] = proc.returncode
+        if proc.returncode != 0 and payload.get("ok", False):
+            payload["ok"] = False
+            payload["error"] = (proc.stderr or proc.stdout or "").strip()
+        return payload
+
+    def _on_fw_test_transcribe_done(self, payload: object) -> None:
+        self._fw_test_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("ok"):
+            text = str(data.get("text", "")).strip()
+            self.fw_test_result_edit.setPlainText(text or "(空テキスト)")
+            self.fw_test_status_label.setText("完了")
+            self._append_log(f"[fw-test] done: {text[:80]}")
+        else:
+            err = str(data.get("error", "unknown error"))
+            self.fw_test_result_edit.setPlainText("")
+            self.fw_test_status_label.setText("失敗")
+            self._append_log(f"[fw-test] failed: {err}")
+
+    def _on_fw_test_transcribe_error(self, err: str) -> None:
+        self._fw_test_worker = None
+        self.fw_test_status_label.setText("失敗")
+        self._append_log(f"[fw-test] worker error: {err}")
+
+    @staticmethod
+    def _is_local_kks_running() -> bool:
+        ps = (
+            "$p=Get-Process -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.ProcessName -like '*KoikatsuSunshine*' -or $_.ProcessName -like '*CharaStudio*' }; "
+            "if($p){'1'}else{'0'}"
+        )
+        try:
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            return proc.returncode == 0 and (proc.stdout or "").strip().startswith("1")
+        except Exception:
+            return False
+
+    @staticmethod
+    def _load_wav_as_float(path: Path) -> tuple[np.ndarray, int]:
+        with wave.open(str(path), "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+        if width == 2:
+            data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif width == 1:
+            data = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif width == 4:
+            data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise RuntimeError(f"unsupported wav sample width: {width}")
+        if channels > 1:
+            data = data.reshape(-1, channels)
+        return data, rate
+
+    def _play_wav_in_gui(self, wav_path: Path) -> bool:
+        try:
+            data, sample_rate = self._load_wav_as_float(wav_path)
+            volume = float(self.sbv2_test_volume_slider.value()) / 100.0
+            data = np.clip(data * volume, -1.0, 1.0)
+            sd.stop()
+            sd.play(data, sample_rate, blocking=False)
+            return True
+        except Exception as exc:
+            self._append_log(f"[sbv2-test] gui play failed: {exc}")
+            return False
+
+    def _play_last_sbv2_test(self) -> None:
+        if self._sbv2_test_last_wav is None or (not self._sbv2_test_last_wav.exists()):
+            self.sbv2_test_status_label.setText("再生可能な音声がありません")
+            return
+        if self._play_wav_in_gui(self._sbv2_test_last_wav):
+            self.sbv2_test_status_label.setText("GUI再生中")
+
+    def _resolve_event_sender_script(self, cfg: AppConfig) -> Path:
+        local = Path(__file__).resolve().parent / "send_voice_face_event.ps1"
+        if local.exists():
+            return local
+        return cfg.kks_root / "work" / "tools" / "voice_face_event_pipe_tester" / "send_voice_face_event.ps1"
+
+    def _send_sbv2_test_event(self, cfg: AppConfig, wav_path: Path) -> tuple[bool, str]:
+        sender_ps1 = self._resolve_event_sender_script(cfg)
+        if not sender_ps1.exists():
+            return False, f"sender not found: {sender_ps1}"
+
+        cmd = [
+            "powershell", "-ExecutionPolicy", "Bypass", "-File", str(sender_ps1),
+            "-PipeName", cfg.pipe_name,
+            "-Main", str(cfg.main_index),
+            "-AudioPath", str(wav_path),
+        ]
+        if cfg.remote_http or cfg.target_host.strip():
+            cmd.append("-RemoteHttp")
+        if cfg.target_host.strip():
+            cmd.extend(["-TargetHost", cfg.target_host.strip()])
+            cmd.extend(["-TargetPort", str(cfg.target_port)])
+            cmd.extend(["-TargetEndpoint", cfg.target_endpoint])
+            if cfg.target_token.strip():
+                cmd.extend(["-TargetToken", cfg.target_token.strip()])
+
+        if self.sbv2_test_keep_face_chk.isChecked():
+            cmd.append("-KeepCurrentFace")
+        else:
+            face = int(self.sbv2_test_face_spin.value())
+            if face >= 0:
+                cmd.extend(["-Face", str(face)])
+            else:
+                cmd.append("-KeepCurrentFace")
+
+        volume = float(self.sbv2_test_volume_slider.value()) / 100.0
+        cmd.extend(["-Volume", f"{volume:.2f}"])
+        if cfg.voice_pitch >= 0:
+            cmd.extend(["-Pitch", str(cfg.voice_pitch)])
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            env=_with_utf8_env(),
+        )
+        detail = (proc.stdout or proc.stderr or "").strip()
+        return proc.returncode == 0, detail
+
+    def _run_sbv2_test_task(self, cfg: AppConfig, text: str) -> dict:
+        script = Path(__file__).resolve().parent / "run_grok_tts_event.py"
+        if not script.exists():
+            raise FileNotFoundError(f"script not found: {script}")
+        cmd = [
+            str(cfg.pipeline_python), str(script),
+            "--response-text", text,
+            "--sbv2-root", str(cfg.sbv2_root),
+            "--model-name", cfg.sbv2_model_name,
+            "--speaker", cfg.sbv2_speaker,
+            "--style", cfg.sbv2_style,
+            "--length", str(cfg.sbv2_length),
+            "--output-dir", str(cfg.output_dir / "grok_tts_outputs"),
+            "--pipe-name", cfg.pipe_name,
+            "--main", str(cfg.main_index),
+            "--no-send-event",
+        ]
+        if cfg.sbv2_model_file:
+            cmd.extend(["--model-file", cfg.sbv2_model_file])
+        if cfg.sbv2_server_url:
+            cmd.extend(["--sbv2-server-url", cfg.sbv2_server_url])
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=420,
+            env=_with_utf8_env(),
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "").strip())
+        payload = _last_json_line(proc.stdout or "")
+        if not payload.get("ok"):
+            raise RuntimeError(str(payload.get("error", "sbv2 test failed")))
+        payload["returncode"] = proc.returncode
+        return payload
+
+    def _run_sbv2_test(self) -> None:
+        if self._sbv2_test_worker is not None and self._sbv2_test_worker.isRunning():
+            self.sbv2_test_status_label.setText("実行中...")
+            return
+        text = self.sbv2_test_text_edit.toPlainText().strip()
+        if not text:
+            self.sbv2_test_status_label.setText("テキスト未入力")
+            return
+        try:
+            cfg = self._build_config()
+        except Exception as exc:
+            self.sbv2_test_status_label.setText("設定エラー")
+            self._append_log(f"[sbv2-test] config error: {exc}")
+            return
+        self.sbv2_test_status_label.setText("音声生成中...")
+        self._sbv2_test_worker = _TaskWorker(lambda: self._run_sbv2_test_task(cfg, text))
+        self._sbv2_test_worker.result_ready.connect(self._on_sbv2_test_done)
+        self._sbv2_test_worker.error_occurred.connect(self._on_sbv2_test_error)
+        self._sbv2_test_worker.start()
+
+    def _on_sbv2_test_done(self, payload: object) -> None:
+        self._sbv2_test_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        merged_wav = Path(str(data.get("merged_wav", ""))).resolve()
+        if not merged_wav.exists():
+            self.sbv2_test_status_label.setText("音声ファイルなし")
+            self._append_log("[sbv2-test] merged wav not found")
+            return
+
+        self._sbv2_test_last_wav = merged_wav
+        try:
+            cfg = self._active_runtime_cfg if self._active_runtime_cfg is not None else self._build_config()
+        except Exception as exc:
+            self.sbv2_test_status_label.setText("設定エラー")
+            self._append_log(f"[sbv2-test] config error: {exc}")
+            return
+        if self._is_local_kks_running():
+            ok, detail = self._send_sbv2_test_event(cfg, merged_wav)
+            if ok:
+                self.sbv2_test_status_label.setText("KKS送信完了")
+                self._append_log("[sbv2-test] sent to KKS")
+                return
+            self._append_log(f"[sbv2-test] KKS send failed: {detail}")
+
+        if self._play_wav_in_gui(merged_wav):
+            self.sbv2_test_status_label.setText("KKS未起動: GUI再生中")
+            self._append_log(f"[sbv2-test] local play: {merged_wav.name}")
+        else:
+            self.sbv2_test_status_label.setText("GUI再生失敗")
+
+    def _on_sbv2_test_error(self, err: str) -> None:
+        self._sbv2_test_worker = None
+        self.sbv2_test_status_label.setText("失敗")
+        self._append_log(f"[sbv2-test] error: {err}")
+
     def _build_conversion_tab(self) -> None:
         tab = QWidget()
         self.tabs.addTab(tab, "変換辞書")
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("TTS前に適用するテキスト変換（上から順に適用）:"))
 
-        self.conversion_table = QTableWidget(0, 2)
-        self.conversion_table.setHorizontalHeaderLabels(["変換前", "変換後"])
+        self.conversion_table = QTableWidget(0, 3)
+        self.conversion_table.setHorizontalHeaderLabels(["変換前", "変換後", "表示適用"])
         self.conversion_table.horizontalHeader().setStretchLastSection(True)
         self.conversion_table.setColumnWidth(0, 250)
+        self.conversion_table.setColumnWidth(1, 250)
+        self.conversion_table.setColumnWidth(2, 110)
         layout.addWidget(self.conversion_table, 1)
 
         btn_row = QHBoxLayout()
@@ -1580,7 +2012,10 @@ class MainWindow(QMainWindow):
         table.insertRow(row)
         table.setItem(row, 0, QTableWidgetItem(""))
         table.setItem(row, 1, QTableWidgetItem(""))
+        table.setItem(row, 2, self._new_display_apply_item(False))
         table.blockSignals(False)
+        table.setCurrentCell(row, 0)
+        table.scrollToItem(table.item(row, 0))
         table.editItem(table.item(row, 0))
         self._on_any_setting_changed()
 
@@ -1590,6 +2025,13 @@ class MainWindow(QMainWindow):
         for row in rows:
             table.removeRow(row)
         self._on_any_setting_changed()
+
+    @staticmethod
+    def _new_display_apply_item(checked: bool) -> QTableWidgetItem:
+        item = QTableWidgetItem("")
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        return item
 
     def _build_transcribe_conversion_tab(self) -> None:
         tab = QWidget()
@@ -1622,6 +2064,8 @@ class MainWindow(QMainWindow):
         table.setItem(row, 0, QTableWidgetItem(""))
         table.setItem(row, 1, QTableWidgetItem(""))
         table.blockSignals(False)
+        table.setCurrentCell(row, 0)
+        table.scrollToItem(table.item(row, 0))
         table.editItem(table.item(row, 0))
         self._on_live_setting_changed()
 
@@ -2076,10 +2520,12 @@ class MainWindow(QMainWindow):
         for row in range(self.conversion_table.rowCount()):
             from_item = self.conversion_table.item(row, 0)
             to_item = self.conversion_table.item(row, 1)
+            display_item = self.conversion_table.item(row, 2)
             from_str = (from_item.text() if from_item else "").strip()
             to_str = (to_item.text() if to_item else "").strip()
             if from_str:
-                conversion_dict.append({"from": from_str, "to": to_str})
+                display_apply = bool(display_item and display_item.checkState() == Qt.CheckState.Checked)
+                conversion_dict.append({"from": from_str, "to": to_str, "display_apply": display_apply})
         return AppConfig(
             wav_dir=Path(self.wav_dir_edit.text().strip()).expanduser().resolve(),
             threshold_dbfs=float(self.threshold_spin.value()),
@@ -2286,6 +2732,7 @@ class MainWindow(QMainWindow):
                 self.conversion_table.insertRow(row)
                 self.conversion_table.setItem(row, 0, QTableWidgetItem(entry.get("from", "")))
                 self.conversion_table.setItem(row, 1, QTableWidgetItem(entry.get("to", "")))
+                self.conversion_table.setItem(row, 2, self._new_display_apply_item(bool(entry.get("display_apply", False))))
             self._model_presets = [p for p in data.get("model_presets", []) if isinstance(p, dict) and p.get("name")]
             self._refresh_preset_ui()
             history = data.get("manual_history", [])
@@ -2565,6 +3012,14 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         try:
             self._save_config()
+        except Exception:
+            pass
+        try:
+            if self._fw_test_stream is not None:
+                self._fw_test_stream.stop()
+                self._fw_test_stream.close()
+                self._fw_test_stream = None
+            sd.stop()
         except Exception:
             pass
         self._stop_all()
