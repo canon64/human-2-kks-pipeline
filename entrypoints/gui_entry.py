@@ -26,8 +26,6 @@ def run_gui(
 
 
 def run_gui_default(argv: Optional[list[str]] = None) -> int:
-    # Delay import to avoid circular dependency when human_2_KKS_pipeline imports this module.
-    from human_2_KKS_pipeline import MainWindow
+    from gui.main_window import MainWindow
 
     return run_gui(MainWindow, argv=argv, mutex_name=MUTEX_NAME)
-
