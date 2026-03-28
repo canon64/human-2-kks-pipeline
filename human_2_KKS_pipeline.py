@@ -39,8 +39,8 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.constants import MUTEX_NAME
-from app.entrypoint import run_qt_app
+from config.constants import MUTEX_NAME
+from entrypoints.gui_entry import run_gui
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DEFAULT_SOURCE_MODE = "both"
@@ -3279,7 +3279,7 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    return run_qt_app(MainWindow, mutex_name=MUTEX_NAME)
+    return run_gui(MainWindow, mutex_name=MUTEX_NAME)
 
 
 if __name__ == "__main__":

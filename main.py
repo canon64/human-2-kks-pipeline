@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from human_2_KKS_pipeline import main
+import sys
+
+from orchestrator.router import run
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
-
+    raise SystemExit(run(sys.argv[1:]))
