@@ -1,2 +1,2 @@
 MUTEX_NAME = "KKS_Human2KKSPipeline"
-
+DEFAULT_SOURCE_MODE = "both"

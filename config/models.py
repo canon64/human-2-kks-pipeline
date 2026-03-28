@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+@dataclass
+class AppConfig:
+    # Recorder
+    wav_dir: Path
+    threshold_dbfs: float
+    silence_seconds: float
+    min_duration_seconds: float
+    pre_roll_seconds: float
+    post_roll_seconds: float
+    device: Optional[int]
+    # Pipeline
+    kks_root: Path
+    output_dir: Path
+    faster_python: Path
+    faster_model: str
+    faster_device: str
+    faster_compute: str
+    faster_language: str
+    faster_beam: int
+    pipeline_python: Path
+    sbv2_root: Path
+    sbv2_model_name: str
+    sbv2_model_file: str
+    sbv2_speaker: str
+    sbv2_style: str
+    sbv2_length: float
+    voice_volume: float
+    voice_pitch: float
+    pipe_name: str
+    target_host: str
+    target_port: int
+    target_endpoint: str
+    target_token: str
+    remote_http: bool
+    subtitle_send_enabled: bool
+    subtitle_target_host: str
+    subtitle_target_port: int
+    subtitle_endpoint: str
+    subtitle_token: str
+    subtitle_timeout_sec: float
+    main_index: int
+    face: int
+    keep_current_face: bool
+    source_mode: str
+    external_text_enabled: bool
+    external_text_host: str
+    external_text_port: int
+    external_text_endpoint: str
+    external_text_token: str
+    external_text_dedupe_max: int
+    transcribe_server_port: int = 18760
+    video_metadata_path: Optional[Path] = None
+    sbv2_server_url: str = "http://127.0.0.1:5000"
+    sbv2_server_auto_start: bool = True
+    filter_phrases: list[str] = field(default_factory=list)
+    transcribe_conversion_dict: list[dict] = field(default_factory=list)
+    conversion_dict: list[dict] = field(default_factory=list)
+
