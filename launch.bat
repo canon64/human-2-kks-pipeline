@@ -17,7 +17,7 @@ if not exist "python\python.exe" (
     )
 )
 
-"python\python.exe" "%~dp0human_2_KKS_pipeline.py" %*
+"python\python.exe" "%~dp0main.py" %*
 if errorlevel 1 (
     echo.
     echo [ERROR] Exited with error.

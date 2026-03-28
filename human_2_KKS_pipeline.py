@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import atexit
-import ctypes
 import random
 import re
 import shutil
@@ -40,6 +38,9 @@ from PyQt6.QtWidgets import (
     QMenu, QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
+
+from app.constants import MUTEX_NAME
+from app.entrypoint import run_qt_app
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DEFAULT_SOURCE_MODE = "both"
@@ -82,24 +83,6 @@ def _save_text(path: Path, text: str) -> None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         path = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
     path.write_text(text, encoding="utf-8")
-
-
-def _acquire_single_instance(mutex_name: str) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_mutex = kernel32.CreateMutexW
-    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-    create_mutex.restype = ctypes.c_void_p
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [ctypes.c_void_p]
-    close_handle.restype = ctypes.c_bool
-    handle = create_mutex(None, False, mutex_name)
-    if not handle:
-        return False
-    if ctypes.get_last_error() == 183:
-        close_handle(handle)
-        return False
-    atexit.register(lambda: close_handle(handle))
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -3296,13 +3279,7 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    if not _acquire_single_instance("KKS_Human2KKSPipeline"):
-        print("[info] Already running.")
-        return 0
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    return app.exec()
+    return run_qt_app(MainWindow, mutex_name=MUTEX_NAME)
 
 
 if __name__ == "__main__":

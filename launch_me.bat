@@ -14,7 +14,7 @@ if not exist "%PY_EXE%" (
     exit /b 1
 )
 
-"%PY_EXE%" "%~dp0human_2_KKS_pipeline.py" %*
+"%PY_EXE%" "%~dp0main.py" %*
 if errorlevel 1 (
     echo.
     echo [ERROR] Exited with error.
