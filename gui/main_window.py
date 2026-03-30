@@ -1275,15 +1275,24 @@ class MainWindow(QMainWindow):
         test_row.addWidget(self.chrome_test_btn)
         layout.addLayout(test_row)
 
-        # ステータス
-        self.chrome_status_label = QLabel("")
-        layout.addWidget(self.chrome_status_label)
-
-        layout.addStretch()
+        # ステータスログ（コピー可能）
+        self.chrome_log_text = QPlainTextEdit()
+        self.chrome_log_text.setReadOnly(True)
+        self.chrome_log_text.setMaximumBlockCount(200)
+        layout.addWidget(self.chrome_log_text, 1)
+        # 後方互換: chrome_status_label への書き込みをログ欄に転送
+        self.chrome_status_label = type("_LabelProxy", (), {
+            "setText": lambda self_proxy, text: self._chrome_log(text),
+            "text": lambda self_proxy: "",
+        })()
 
         # 初期化
         self._chrome_driver = None
         self._refresh_chrome_profiles()
+
+    def _chrome_log(self, text: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.chrome_log_text.appendPlainText(f"[{stamp}] {text}")
 
     def _refresh_chrome_profiles(self) -> None:
         self.chrome_profile_combo.clear()
