@@ -1009,6 +1009,10 @@ class PipelineWorker(QObject):
             p_cmd.extend(["--detection-mode", self._cfg.grok_detection_mode])
             if self._cfg.grok_text_stable_seconds > 0:
                 p_cmd.extend(["--text-stable-seconds", str(self._cfg.grok_text_stable_seconds)])
+        # event-senderは同梱スクリプトを明示指定
+        sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
+        if sender_ps1.exists():
+            p_cmd.extend(["--event-sender", str(sender_ps1)])
         if self._cfg.keep_current_face:
             p_cmd.append("--keep-current-face")
         elif self._cfg.face >= 0:

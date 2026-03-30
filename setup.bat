@@ -55,9 +55,16 @@ if not exist "%PIP_EXE%" (
 echo Python: %PY_EXE%
 echo.
 
-:: Upgrade pip
+:: Upgrade pip and install build tools
 echo Upgrading pip...
 "%PY_EXE%" -m pip install --upgrade pip
+echo Installing build tools...
+"%PY_EXE%" -m pip install --upgrade setuptools wheel
+if errorlevel 1 (
+    echo [ERROR] Failed to install setuptools/wheel.
+    pause
+    exit /b 1
+)
 
 :: Install requirements
 echo.
