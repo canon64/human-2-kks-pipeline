@@ -1005,6 +1005,10 @@ class PipelineWorker(QObject):
             p_cmd.extend(["--sbv2-server-url", self._cfg.sbv2_server_url])
         if combined_conv:
             p_cmd.extend(["--conversion-json", json.dumps(combined_conv, ensure_ascii=False)])
+        if self._cfg.grok_detection_mode and self._cfg.grok_detection_mode != "stop_button":
+            p_cmd.extend(["--detection-mode", self._cfg.grok_detection_mode])
+            if self._cfg.grok_text_stable_seconds > 0:
+                p_cmd.extend(["--text-stable-seconds", str(self._cfg.grok_text_stable_seconds)])
         if self._cfg.keep_current_face:
             p_cmd.append("--keep-current-face")
         elif self._cfg.face >= 0:

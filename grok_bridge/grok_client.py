@@ -36,14 +36,27 @@ def ensure_current_tab_is_grok(driver) -> None:
 
 
 def _latest_response_text(driver, selectors: Sequence[str]) -> str:
-    """最後の応答要素のみを取得する（高速版）。"""
+    """最後の応答要素のみを取得する（複数セレクタフォールバック付き）。"""
+    # セレクタ優先順位: 具体的 → 部分一致 → 汎用
+    _FALLBACK_SELECTORS = [
+        '.response-content-markdown.markdown',
+        '[class*="response"][class*="markdown"]',
+        '[class*="message"][class*="assistant"]',
+        '.markdown',
+    ]
     try:
         text = driver.execute_script(
             """
-            const nodes = document.querySelectorAll('.response-content-markdown.markdown');
-            if (!nodes.length) return '';
-            return (nodes[nodes.length - 1].innerText || '').trim();
-            """
+            var selectors = arguments[0];
+            for (var i = 0; i < selectors.length; i++) {
+                var nodes = document.querySelectorAll(selectors[i]);
+                if (nodes.length) {
+                    return (nodes[nodes.length - 1].innerText || '').trim();
+                }
+            }
+            return '';
+            """,
+            _FALLBACK_SELECTORS,
         )
         if isinstance(text, str) and text.strip():
             return text.strip()
@@ -367,17 +380,16 @@ def send_text(driver, config: BridgeConfig, text: str, logger: logging.Logger) -
     return baseline, False
 
 
-def wait_for_response(
+def _wait_stop_button_mode(
     driver,
     config: BridgeConfig,
     logger: logging.Logger,
     baseline_text: str,
-    stop_before: bool,
 ) -> str:
-    """停止ボタンの出現→消滅を監視して完了を検出し、最後の応答要素だけ取得する。"""
+    """停止ボタンの出現→消滅を監視して完了を検出する（従来方式）。"""
     deadline = time.time() + config.response_timeout_seconds
+    selectors = config.selectors.response_blocks
 
-    # 送信直後はまだアイドル状態のことがあるので少し待つ
     time.sleep(0.3)
 
     # Phase 1: 停止ボタンが出現するまで待つ（最大15秒）
@@ -391,9 +403,8 @@ def wait_for_response(
         time.sleep(0.2)
 
     if not stop_appeared:
-        # 即座に終わった可能性（停止ボタンが一瞬で消えた場合など）
         logger.warning("stop_button_never_appeared, checking for instant response")
-        text = _latest_response_text(driver, config.selectors.response_blocks)
+        text = _latest_response_text(driver, selectors)
         if text and text != baseline_text:
             logger.info("instant_response len=%d", len(text))
             return text
@@ -401,15 +412,75 @@ def wait_for_response(
     # Phase 2: 停止ボタンが消えるまで待つ
     while time.time() < deadline:
         if not _is_stop_button_present(driver, config):
-            text = _latest_response_text(driver, config.selectors.response_blocks)
+            text = _latest_response_text(driver, selectors)
             if text and text != baseline_text:
                 logger.info("response_complete len=%d", len(text))
                 return text
         time.sleep(config.response_poll_seconds)
 
-    # タイムアウト時は最後に取れたテキストを返す
-    text = _latest_response_text(driver, config.selectors.response_blocks)
+    text = _latest_response_text(driver, selectors)
     if text and text != baseline_text:
         logger.warning("response_timeout_return_last len=%d", len(text))
         return text
     raise TimeoutError("Timed out while waiting for Grok response.")
+
+
+def _wait_text_stable_mode(
+    driver,
+    config: BridgeConfig,
+    logger: logging.Logger,
+    baseline_text: str,
+) -> str:
+    """テキスト変化の安定を監視して完了を検出する（汎用方式）。"""
+    deadline = time.time() + config.response_timeout_seconds
+    selectors = config.selectors.response_blocks
+    stable_threshold = config.text_stable_seconds
+    poll_interval = 0.5
+
+    time.sleep(0.3)
+
+    last_text = ""
+    last_change_time = time.time()
+    response_started = False
+
+    while time.time() < deadline:
+        text = _latest_response_text(driver, selectors)
+
+        if text and text != baseline_text:
+            if not response_started:
+                logger.info("text_stable: response_started len=%d", len(text))
+                response_started = True
+
+            if text != last_text:
+                last_text = text
+                last_change_time = time.time()
+                logger.debug("text_stable: text_changed len=%d", len(text))
+            elif response_started and (time.time() - last_change_time) >= stable_threshold:
+                logger.info("text_stable: stable_complete len=%d (%.1fs stable)",
+                            len(text), time.time() - last_change_time)
+                return text
+
+        time.sleep(poll_interval)
+
+    # タイムアウト: 最後に取れたテキストがあれば返す
+    if last_text and last_text != baseline_text:
+        logger.warning("text_stable: timeout_return_last len=%d", len(last_text))
+        return last_text
+    raise TimeoutError("Timed out while waiting for Grok response.")
+
+
+def wait_for_response(
+    driver,
+    config: BridgeConfig,
+    logger: logging.Logger,
+    baseline_text: str,
+    stop_before: bool,
+) -> str:
+    """設定に応じた方式でGrok応答を待機する。"""
+    mode = config.response_detection_mode
+    logger.info("wait_for_response mode=%s timeout=%.0fs", mode, config.response_timeout_seconds)
+
+    if mode == "text_stable":
+        return _wait_text_stable_mode(driver, config, logger, baseline_text)
+    else:
+        return _wait_stop_button_mode(driver, config, logger, baseline_text)

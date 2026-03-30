@@ -37,12 +37,19 @@ if not exist "%PY_EXE%" (
     for %%f in ("%PY_DIR%\python*._pth") do (
         powershell -Command "(Get-Content '%%f') -replace '#import site','import site' | Set-Content '%%f'"
     )
+)
 
-    :: Install pip
-    echo Installing pip...
+:: Check / install pip (python.exeがあってもpipがなければ再導入)
+if not exist "%PIP_EXE%" (
+    echo pip not found. Installing pip...
     powershell -Command "Invoke-WebRequest -Uri '%GET_PIP_URL%' -OutFile '%PY_DIR%\get-pip.py'"
     "%PY_EXE%" "%PY_DIR%\get-pip.py" --no-warn-script-location
     del "%PY_DIR%\get-pip.py"
+    if not exist "%PIP_EXE%" (
+        echo [ERROR] Failed to install pip.
+        pause
+        exit /b 1
+    )
 )
 
 echo Python: %PY_EXE%

@@ -1233,6 +1233,23 @@ class MainWindow(QMainWindow):
         port_row.addStretch()
         layout.addLayout(port_row)
 
+        # Grok応答検出モード
+        detect_row = QHBoxLayout()
+        detect_row.addWidget(QLabel("応答検出モード:"))
+        self.grok_detection_combo = _NoWheelComboBox()
+        self.grok_detection_combo.addItems(["stop_button", "text_stable"])
+        self.grok_detection_combo.setCurrentText("stop_button")
+        detect_row.addWidget(self.grok_detection_combo)
+        detect_row.addWidget(QLabel("安定判定秒数:"))
+        self.grok_text_stable_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.grok_text_stable_spin.setRange(0.5, 10.0)
+        self.grok_text_stable_spin.setValue(2.5)
+        self.grok_text_stable_spin.setDecimals(1)
+        self.grok_text_stable_spin.setSuffix(" 秒")
+        detect_row.addWidget(self.grok_text_stable_spin)
+        detect_row.addStretch()
+        layout.addLayout(detect_row)
+
         # ボタン行
         btn_row = QHBoxLayout()
         self.chrome_launch_btn = QPushButton("Chrome起動")

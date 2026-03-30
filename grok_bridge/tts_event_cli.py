@@ -333,6 +333,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
     parser.add_argument("--poll", type=float, default=None, help="Grok response poll interval seconds.")
     parser.add_argument("--settle-rounds", type=int, default=None, help="Grok stable rounds before finish.")
+    parser.add_argument("--detection-mode", default=None, choices=["stop_button", "text_stable"],
+                        help="Grok response detection mode.")
+    parser.add_argument("--text-stable-seconds", type=float, default=None,
+                        help="Seconds of no text change to consider response complete (text_stable mode).")
 
     parser.add_argument(
         "--sbv2-root",
@@ -406,6 +410,10 @@ def main() -> int:
         config.response_poll_seconds = float(args.poll)
     if args.settle_rounds is not None:
         config.response_settle_rounds = max(1, int(args.settle_rounds))
+    if args.detection_mode is not None:
+        config.response_detection_mode = args.detection_mode
+    if args.text_stable_seconds is not None:
+        config.text_stable_seconds = float(args.text_stable_seconds)
 
     logger = setup_logger(config, str(base_dir))
     logger.info("tts_event_start config_path=%s port=%d", config_path, config.debug_port)

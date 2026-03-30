@@ -118,6 +118,8 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         filter_phrases=filter_phrases,
         transcribe_conversion_dict=transcribe_conversion_dict,
         conversion_dict=conversion_dict,
+        grok_detection_mode=window.grok_detection_combo.currentText().strip() or "stop_button",
+        grok_text_stable_seconds=float(window.grok_text_stable_spin.value()),
     )
 
 
@@ -193,6 +195,8 @@ def save_config(
         "chrome_debug_port": window.chrome_port_spin.value(),
         "chrome_headless": window.chrome_headless_chk.isChecked(),
         "chrome_profile": window.chrome_profile_combo.currentData() or "",
+        "grok_detection_mode": window.grok_detection_combo.currentText().strip() or "stop_button",
+        "grok_text_stable_seconds": float(window.grok_text_stable_spin.value()),
     }
     config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return cfg
@@ -274,6 +278,8 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.video_metadata_edit.setText(s("video_metadata_path", window.video_metadata_edit.text()))
         window.chrome_port_spin.setValue(i("chrome_debug_port", 9222))
         window.chrome_headless_chk.setChecked(b("chrome_headless", False))
+        window.grok_detection_combo.setCurrentText(s("grok_detection_mode", "stop_button"))
+        window.grok_text_stable_spin.setValue(f("grok_text_stable_seconds", 2.5))
         saved_profile = s("chrome_profile", "")
         if saved_profile:
             for idx in range(window.chrome_profile_combo.count()):
