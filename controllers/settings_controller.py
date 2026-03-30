@@ -279,7 +279,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.chrome_port_spin.setValue(i("chrome_debug_port", 9222))
         window.chrome_headless_chk.setChecked(b("chrome_headless", False))
         window.grok_detection_combo.setCurrentText(s("grok_detection_mode", "stop_button"))
-        window.grok_text_stable_spin.setValue(f("grok_text_stable_seconds", 2.5))
+        window.grok_text_stable_spin.setValue(f("grok_text_stable_seconds", 1.5))
         saved_profile = s("chrome_profile", "")
         if saved_profile:
             for idx in range(window.chrome_profile_combo.count()):

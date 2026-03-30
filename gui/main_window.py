@@ -1244,7 +1244,7 @@ class MainWindow(QMainWindow):
         detect_row.addWidget(QLabel("安定判定秒数:"))
         self.grok_text_stable_spin = _NoWheelAlwaysDoubleSpinBox()
         self.grok_text_stable_spin.setRange(0.5, 10.0)
-        self.grok_text_stable_spin.setValue(2.5)
+        self.grok_text_stable_spin.setValue(1.5)
         self.grok_text_stable_spin.setDecimals(1)
         self.grok_text_stable_spin.setSuffix(" 秒")
         detect_row.addWidget(self.grok_text_stable_spin)

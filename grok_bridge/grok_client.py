@@ -35,51 +35,71 @@ def ensure_current_tab_is_grok(driver) -> None:
         raise RuntimeError(f"Current tab is not Grok: {current_url}")
 
 
+_FALLBACK_SELECTORS = [
+    '.response-content-markdown.markdown',
+    '[class*="response"][class*="markdown"]',
+    '[class*="message"][class*="assistant"]',
+    '.markdown',
+]
+
+# 軽量JS: 最初にヒットしたセレクタのテキストだけ返す（診断不要時用）
+_FAST_JS = """
+var sels = arguments[0];
+for (var i = 0; i < sels.length; i++) {
+    var nodes = document.querySelectorAll(sels[i]);
+    if (nodes.length > 0) {
+        var t = (nodes[nodes.length - 1].innerText || '').trim();
+        if (t) return t;
+    }
+}
+return '';
+"""
+
+# 診断JS: 全セレクタの詳細を返す（診断時用）
+_DIAG_JS = """
+var selectors = arguments[0];
+var report = [];
+for (var i = 0; i < selectors.length; i++) {
+    var nodes = document.querySelectorAll(selectors[i]);
+    var count = nodes.length;
+    var text = '';
+    if (count > 0) {
+        text = (nodes[nodes.length - 1].innerText || '').trim();
+    }
+    report.push({selector: selectors[i], count: count, len: text.length, text: text});
+}
+return JSON.stringify(report);
+"""
+
+
 def _latest_response_text(driver, selectors: Sequence[str], logger: logging.Logger | None = None) -> str:
     """最後の応答要素のみを取得する（複数セレクタフォールバック付き・診断ログ付き）。"""
-    _FALLBACK_SELECTORS = [
-        '.response-content-markdown.markdown',
-        '[class*="response"][class*="markdown"]',
-        '[class*="message"][class*="assistant"]',
-        '.markdown',
-    ]
+    if not logger:
+        # 軽量パス: 1回のJS実行で最初にヒットしたテキストだけ返す
+        try:
+            text = driver.execute_script(_FAST_JS, _FALLBACK_SELECTORS)
+            return (text or "").strip()
+        except Exception:
+            return ""
+
+    # 診断パス: 全セレクタの詳細をログ出力
     try:
-        result = driver.execute_script(
-            """
-            var selectors = arguments[0];
-            var report = [];
-            for (var i = 0; i < selectors.length; i++) {
-                var nodes = document.querySelectorAll(selectors[i]);
-                var count = nodes.length;
-                var text = '';
-                if (count > 0) {
-                    text = (nodes[nodes.length - 1].innerText || '').trim();
-                }
-                report.push({selector: selectors[i], count: count, len: text.length, text: text});
-            }
-            return JSON.stringify(report);
-            """,
-            _FALLBACK_SELECTORS,
-        )
+        result = driver.execute_script(_DIAG_JS, _FALLBACK_SELECTORS)
         import json as _json
         report = _json.loads(result) if isinstance(result, str) else []
-        if logger:
-            for entry in report:
-                logger.info("selector_probe sel=%s count=%d text_len=%d preview=%.60s",
-                            entry.get("selector", "?"), entry.get("count", 0),
-                            entry.get("len", 0), entry.get("text", "")[:60])
+        for entry in report:
+            logger.info("selector_probe sel=%s count=%d text_len=%d preview=%.60s",
+                        entry.get("selector", "?"), entry.get("count", 0),
+                        entry.get("len", 0), entry.get("text", "")[:60])
         # 最初にヒットしたセレクタのテキストを返す
         for entry in report:
             text = entry.get("text", "").strip()
             if text:
-                if logger:
-                    logger.info("selector_hit sel=%s text_len=%d", entry.get("selector", "?"), len(text))
+                logger.info("selector_hit sel=%s text_len=%d", entry.get("selector", "?"), len(text))
                 return text
-        if logger:
-            logger.warning("selector_all_miss: no text found from any selector")
+        logger.warning("selector_all_miss: no text found from any selector")
     except Exception as exc:
-        if logger:
-            logger.error("selector_error: %s", exc)
+        logger.error("selector_error: %s", exc)
     return ""
 
 
@@ -462,7 +482,7 @@ def _wait_text_stable_mode(
     deadline = time.time() + config.response_timeout_seconds
     selectors = config.selectors.response_blocks
     stable_threshold = config.text_stable_seconds
-    poll_interval = 0.5
+    poll_interval = 0.3
 
     time.sleep(0.3)
 

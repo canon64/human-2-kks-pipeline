@@ -55,7 +55,7 @@ class BridgeConfig:
     response_settle_rounds: int = 2
     wait_for_icon_change: bool = True
     response_detection_mode: str = "stop_button"  # "stop_button" or "text_stable"
-    text_stable_seconds: float = 2.5  # text_stableモード: 変化なし判定秒数
+    text_stable_seconds: float = 1.5  # text_stableモード: 変化なし判定秒数
     selectors: SelectorConfig = field(default_factory=SelectorConfig)
     log: LogConfig = field(default_factory=LogConfig)
 
@@ -145,7 +145,7 @@ def load_or_create_config(config_path: str) -> BridgeConfig:
         response_settle_rounds=max(1, int(merged["response_settle_rounds"])),
         wait_for_icon_change=bool(merged["wait_for_icon_change"]),
         response_detection_mode=str(merged.get("response_detection_mode", "stop_button")),
-        text_stable_seconds=float(merged.get("text_stable_seconds", 2.5)),
+        text_stable_seconds=float(merged.get("text_stable_seconds", 1.5)),
         selectors=SelectorConfig(
             input=str(selectors["input"]),
             send_buttons=[str(x) for x in selectors.get("send_buttons", [])],
