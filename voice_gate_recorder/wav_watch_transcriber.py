@@ -464,7 +464,7 @@ class WavWatchTranscriber:
             target_endpoint = auto_cfg.get("target_endpoint", "/voice-face-event")
             target_token = auto_cfg.get("target_token", "").strip()
             remote_http = bool(auto_cfg.get("remote_http", False))
-            kks_root = Path(auto_cfg.get("kks_root", "F:/kks")).expanduser().resolve()
+            kks_root = Path(auto_cfg.get("kks_root", str(Path(__file__).resolve().parent.parent))).expanduser().resolve()
             output_dir = str(self.cfg.grok_script_path.parent / "outputs" / "auto_pipeline")
             event_sender = str(Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1")
 

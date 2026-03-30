@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
             "Start on threshold, stop after silence, discard short clips."
         )
     )
-    parser.add_argument("--output-dir", default="F:/kks/wave", help="Saved WAV directory.")
+    parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent.parent / "outputs" / "wav"), help="Saved WAV directory.")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Sample rate (Hz).")
     parser.add_argument("--block-ms", type=int, default=100, help="Chunk size in milliseconds.")
     parser.add_argument(
