@@ -900,10 +900,7 @@ class MainWindow(QMainWindow):
             self.sbv2_test_status_label.setText("GUI再生中")
 
     def _resolve_event_sender_script(self, cfg: AppConfig) -> Path:
-        local = PROJECT_ROOT / "send_voice_face_event.ps1"
-        if local.exists():
-            return local
-        return cfg.kks_root / "work" / "tools" / "voice_face_event_pipe_tester" / "send_voice_face_event.ps1"
+        return PROJECT_ROOT / "send_voice_face_event.ps1"
 
     def _send_sbv2_test_event(self, cfg: AppConfig, wav_path: Path) -> tuple[bool, str]:
         sender_ps1 = self._resolve_event_sender_script(cfg)

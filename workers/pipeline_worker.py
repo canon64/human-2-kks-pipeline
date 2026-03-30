@@ -855,7 +855,7 @@ class PipelineWorker(QObject):
 
     def _schedule_response_text(self, text: str, main_index: int, delay_sec: float) -> None:
         """Grokの生テキストをそのままKKSへ送る（C#側でキーワードマッチ）"""
-        sender_ps1 = self._cfg.kks_root / "work" / "tools" / "voice_face_event_pipe_tester" / "send_voice_face_event.ps1"
+        sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         pipe_name = self._cfg.pipe_name
         target_host = self._cfg.target_host.strip()
         remote_http = self._cfg.remote_http

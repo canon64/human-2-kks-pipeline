@@ -466,7 +466,7 @@ class WavWatchTranscriber:
             remote_http = bool(auto_cfg.get("remote_http", False))
             kks_root = Path(auto_cfg.get("kks_root", "F:/kks")).expanduser().resolve()
             output_dir = str(self.cfg.grok_script_path.parent / "outputs" / "auto_pipeline")
-            event_sender = str(kks_root / "work" / "tools" / "voice_face_event_pipe_tester" / "send_voice_face_event.ps1")
+            event_sender = str(Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1")
 
             cmd = [
                 str(pipeline_python),
