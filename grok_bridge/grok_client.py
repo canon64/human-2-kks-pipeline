@@ -35,9 +35,8 @@ def ensure_current_tab_is_grok(driver) -> None:
         raise RuntimeError(f"Current tab is not Grok: {current_url}")
 
 
-def _latest_response_text(driver, selectors: Sequence[str]) -> str:
-    """最後の応答要素のみを取得する（複数セレクタフォールバック付き）。"""
-    # セレクタ優先順位: 具体的 → 部分一致 → 汎用
+def _latest_response_text(driver, selectors: Sequence[str], logger: logging.Logger | None = None) -> str:
+    """最後の応答要素のみを取得する（複数セレクタフォールバック付き・診断ログ付き）。"""
     _FALLBACK_SELECTORS = [
         '.response-content-markdown.markdown',
         '[class*="response"][class*="markdown"]',
@@ -45,23 +44,42 @@ def _latest_response_text(driver, selectors: Sequence[str]) -> str:
         '.markdown',
     ]
     try:
-        text = driver.execute_script(
+        result = driver.execute_script(
             """
             var selectors = arguments[0];
+            var report = [];
             for (var i = 0; i < selectors.length; i++) {
                 var nodes = document.querySelectorAll(selectors[i]);
-                if (nodes.length) {
-                    return (nodes[nodes.length - 1].innerText || '').trim();
+                var count = nodes.length;
+                var text = '';
+                if (count > 0) {
+                    text = (nodes[nodes.length - 1].innerText || '').trim();
                 }
+                report.push({selector: selectors[i], count: count, len: text.length, text: text});
             }
-            return '';
+            return JSON.stringify(report);
             """,
             _FALLBACK_SELECTORS,
         )
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-    except Exception:
-        pass
+        import json as _json
+        report = _json.loads(result) if isinstance(result, str) else []
+        if logger:
+            for entry in report:
+                logger.info("selector_probe sel=%s count=%d text_len=%d preview=%.60s",
+                            entry.get("selector", "?"), entry.get("count", 0),
+                            entry.get("len", 0), entry.get("text", "")[:60])
+        # 最初にヒットしたセレクタのテキストを返す
+        for entry in report:
+            text = entry.get("text", "").strip()
+            if text:
+                if logger:
+                    logger.info("selector_hit sel=%s text_len=%d", entry.get("selector", "?"), len(text))
+                return text
+        if logger:
+            logger.warning("selector_all_miss: no text found from any selector")
+    except Exception as exc:
+        if logger:
+            logger.error("selector_error: %s", exc)
     return ""
 
 
@@ -356,8 +374,9 @@ def _set_and_send(driver, text: str) -> bool:
 
 def send_text(driver, config: BridgeConfig, text: str, logger: logging.Logger) -> tuple[str, bool]:
     ensure_current_tab_is_grok(driver)
-    baseline = _latest_response_text(driver, config.selectors.response_blocks)
-    logger.info("baseline_response_len=%d", len(baseline))
+    logger.info("baseline_capture_start")
+    baseline = _latest_response_text(driver, config.selectors.response_blocks, logger)
+    logger.info("baseline_response_len=%d preview=%.60s", len(baseline), baseline[:60])
 
     result = _set_and_send(driver, text)
     logger.info("set_and_send=%s", result)
@@ -404,24 +423,32 @@ def _wait_stop_button_mode(
 
     if not stop_appeared:
         logger.warning("stop_button_never_appeared, checking for instant response")
-        text = _latest_response_text(driver, selectors)
+        text = _latest_response_text(driver, selectors, logger)
         if text and text != baseline_text:
             logger.info("instant_response len=%d", len(text))
             return text
+        else:
+            logger.warning("instant_check: text_len=%d baseline_match=%s", len(text), text == baseline_text)
 
     # Phase 2: 停止ボタンが消えるまで待つ
+    poll_count = 0
     while time.time() < deadline:
         if not _is_stop_button_present(driver, config):
-            text = _latest_response_text(driver, selectors)
+            # 最初の数回と10回ごとに詳細ログ
+            use_detail = poll_count < 3 or poll_count % 10 == 0
+            text = _latest_response_text(driver, selectors, logger if use_detail else None)
             if text and text != baseline_text:
-                logger.info("response_complete len=%d", len(text))
+                logger.info("response_complete len=%d poll_count=%d", len(text), poll_count)
                 return text
+        poll_count += 1
         time.sleep(config.response_poll_seconds)
 
-    text = _latest_response_text(driver, selectors)
+    logger.warning("timeout_reached poll_count=%d, final probe:", poll_count)
+    text = _latest_response_text(driver, selectors, logger)
     if text and text != baseline_text:
         logger.warning("response_timeout_return_last len=%d", len(text))
         return text
+    logger.error("all_selectors_failed: response empty after %d polls", poll_count)
     raise TimeoutError("Timed out while waiting for Grok response.")
 
 
@@ -443,29 +470,39 @@ def _wait_text_stable_mode(
     last_change_time = time.time()
     response_started = False
 
+    poll_count = 0
     while time.time() < deadline:
-        text = _latest_response_text(driver, selectors)
+        # 最初の3回と10回ごとに詳細ログ
+        use_detail = poll_count < 3 or poll_count % 10 == 0
+        text = _latest_response_text(driver, selectors, logger if use_detail else None)
 
         if text and text != baseline_text:
             if not response_started:
-                logger.info("text_stable: response_started len=%d", len(text))
+                logger.info("text_stable: response_started len=%d poll=%d", len(text), poll_count)
                 response_started = True
 
             if text != last_text:
                 last_text = text
                 last_change_time = time.time()
-                logger.debug("text_stable: text_changed len=%d", len(text))
+                logger.info("text_stable: text_changed len=%d poll=%d", len(text), poll_count)
             elif response_started and (time.time() - last_change_time) >= stable_threshold:
-                logger.info("text_stable: stable_complete len=%d (%.1fs stable)",
-                            len(text), time.time() - last_change_time)
+                logger.info("text_stable: stable_complete len=%d (%.1fs stable) poll=%d",
+                            len(text), time.time() - last_change_time, poll_count)
                 return text
+        elif use_detail and poll_count > 0:
+            logger.debug("text_stable: no_change text_len=%d baseline_match=%s poll=%d",
+                         len(text), text == baseline_text, poll_count)
 
+        poll_count += 1
         time.sleep(poll_interval)
 
-    # タイムアウト: 最後に取れたテキストがあれば返す
+    # タイムアウト: 最終診断ログ
+    logger.warning("text_stable: timeout_reached poll_count=%d, final probe:", poll_count)
+    _latest_response_text(driver, selectors, logger)
     if last_text and last_text != baseline_text:
         logger.warning("text_stable: timeout_return_last len=%d", len(last_text))
         return last_text
+    logger.error("text_stable: all_selectors_failed after %d polls", poll_count)
     raise TimeoutError("Timed out while waiting for Grok response.")
 
 
