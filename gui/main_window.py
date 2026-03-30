@@ -241,7 +241,8 @@ class MainWindow(QMainWindow):
         # ログ
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text, 1)
+        self.log_text.setMinimumHeight(200)
+        layout.addWidget(self.log_text, 3)
 
     def _build_recorder_tab(self) -> None:
         tab = QWidget()

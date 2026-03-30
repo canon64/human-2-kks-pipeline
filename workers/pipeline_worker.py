@@ -479,7 +479,7 @@ class PipelineWorker(QObject):
     def _run_cmd(self, cmd: list[str], timeout_sec: float) -> subprocess.CompletedProcess:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="strict",
+            text=True, encoding="utf-8", errors="replace",
             env=_with_utf8_env(),
         )
         with self._proc_lock:

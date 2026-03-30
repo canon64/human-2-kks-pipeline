@@ -276,7 +276,7 @@ def _run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.C
         text=True,
         capture_output=True,
         encoding="utf-8",
-        errors="strict",
+        errors="replace",
         env=with_utf8_env(),
         check=True,
     )
