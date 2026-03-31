@@ -1970,8 +1970,8 @@ class MainWindow(QMainWindow):
         self._pipeline_thread.started.connect(self._pipeline_worker.run)
         self._pipeline_worker.log.connect(self._append_log)
         self._pipeline_worker.error.connect(self._on_pipeline_error)
-        self._pipeline_worker.finished.connect(self._pipeline_worker.deleteLater)
-        self._pipeline_thread.finished.connect(self._pipeline_thread.deleteLater)
+        # deleteLaterは使わない — _do_stop()でPython参照をNoneにして回収する
+        # (deleteLaterだとC++が先に消えてpause()等でクラッシュする)
         self._pipeline_thread.start()
 
         # 録音起動

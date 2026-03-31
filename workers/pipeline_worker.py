@@ -189,11 +189,17 @@ class PipelineWorker(QObject):
                 drained += 1
             except queue.Empty:
                 break
-        self.log.emit(f"[pause] WAVキュー破棄: {drained}件")
+        try:
+            self.log.emit(f"[pause] WAVキュー破棄: {drained}件")
+        except RuntimeError:
+            pass
 
     def resume(self) -> None:
         self._paused = False
-        self.log.emit("[resume] 再開")
+        try:
+            self.log.emit("[resume] 再開")
+        except RuntimeError:
+            pass
 
     def send_text(self, text: str) -> None:
         try:
@@ -369,17 +375,28 @@ class PipelineWorker(QObject):
     @pyqtSlot()
     def run(self) -> None:
         try:
+            self.log.emit("[pipeline] フォルダ作成中...")
             self._cfg.wav_dir.mkdir(parents=True, exist_ok=True)
             for sub in ("transcripts", "responses", "results", "grok_tts_outputs"):
                 (self._cfg.output_dir / sub).mkdir(parents=True, exist_ok=True)
+            self.log.emit(f"[pipeline] フォルダOK: wav={self._cfg.wav_dir}, out={self._cfg.output_dir}")
 
+            self.log.emit("[pipeline] transcribeサーバー起動中...")
             self._start_transcribe_server()
-            self._start_sbv2_server()
-            self._start_external_text_server()
+            self.log.emit("[pipeline] transcribeサーバーOK")
 
+            self.log.emit("[pipeline] SBV2サーバー起動中...")
+            self._start_sbv2_server()
+            self.log.emit("[pipeline] SBV2サーバーOK")
+
+            self.log.emit("[pipeline] 外部テキストサーバー起動中...")
+            self._start_external_text_server()
+            self.log.emit("[pipeline] 外部テキストサーバーOK")
+
+            self.log.emit("[pipeline] ファイル監視起動中...")
             self._observer = self._create_observer()
             self._observer.start()
-            self.log.emit(f"[info] 監視開始: {self._cfg.wav_dir}")
+            self.log.emit(f"[pipeline] 全起動完了 — 監視開始: {self._cfg.wav_dir}")
 
             while self._running:
                 # 手動テキスト優先
@@ -415,13 +432,16 @@ class PipelineWorker(QObject):
                     pass
 
         except Exception:
-            self.error.emit(traceback.format_exc())
+            tb = traceback.format_exc()
+            self.log.emit(f"[pipeline] ★致命的エラーで停止:\n{tb}")
+            self.error.emit(tb)
         finally:
+            self.log.emit("[pipeline] 終了処理開始...")
             if self._observer is not None:
                 self._observer.stop()
                 self._observer.join(timeout=3.0)
             self._stop_external_text_server()
-            self.log.emit("[info] パイプライン停止")
+            self.log.emit("[pipeline] パイプライン停止完了")
             self.finished.emit()
 
     def _create_observer(self):
