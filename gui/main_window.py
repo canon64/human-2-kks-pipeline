@@ -311,6 +311,23 @@ class MainWindow(QMainWindow):
         out_btn.clicked.connect(lambda: self._pick_dir(self.output_dir_edit, "出力先"))
         form.addRow("出力先", self._hrow(self.output_dir_edit, out_btn))
 
+        save_row = QHBoxLayout()
+        self.save_faster_text_chk = QCheckBox("Whisperテキスト保存")
+        self.save_faster_text_chk.setChecked(True)
+        self.save_source_wav_chk = QCheckBox("元WAV保存")
+        self.save_source_wav_chk.setChecked(False)
+        self.save_sbv2_text_chk = QCheckBox("SBV2入力テキスト保存")
+        self.save_sbv2_text_chk.setChecked(True)
+        self.save_sbv2_wav_chk = QCheckBox("SBV2生成WAV保存")
+        self.save_sbv2_wav_chk.setChecked(False)
+        save_row.addWidget(self.save_faster_text_chk)
+        save_row.addWidget(self.save_source_wav_chk)
+        save_row.addWidget(self.save_sbv2_text_chk)
+        save_row.addWidget(self.save_sbv2_wav_chk)
+        save_row.addStretch(1)
+        save_w = QWidget(); save_w.setLayout(save_row)
+        form.addRow("保存設定", save_w)
+
         _local_py = str(PROJECT_ROOT / "python" / "python.exe")
         self.faster_python_edit = QLineEdit(_local_py)
         fp_btn = QPushButton("参照")
@@ -899,55 +916,6 @@ class MainWindow(QMainWindow):
         if self._play_wav_in_gui(self._sbv2_test_last_wav):
             self.sbv2_test_status_label.setText("GUI再生中")
 
-    def _resolve_event_sender_script(self, cfg: AppConfig) -> Path:
-        return PROJECT_ROOT / "send_voice_face_event.ps1"
-
-    def _send_sbv2_test_event(self, cfg: AppConfig, wav_path: Path) -> tuple[bool, str]:
-        sender_ps1 = self._resolve_event_sender_script(cfg)
-        if not sender_ps1.exists():
-            return False, f"sender not found: {sender_ps1}"
-
-        cmd = [
-            "powershell", "-ExecutionPolicy", "Bypass", "-File", str(sender_ps1),
-            "-PipeName", cfg.pipe_name,
-            "-Main", str(cfg.main_index),
-            "-AudioPath", str(wav_path),
-        ]
-        if cfg.remote_http or cfg.target_host.strip():
-            cmd.append("-RemoteHttp")
-        if cfg.target_host.strip():
-            cmd.extend(["-TargetHost", cfg.target_host.strip()])
-            cmd.extend(["-TargetPort", str(cfg.target_port)])
-            cmd.extend(["-TargetEndpoint", cfg.target_endpoint])
-            if cfg.target_token.strip():
-                cmd.extend(["-TargetToken", cfg.target_token.strip()])
-
-        if self.sbv2_test_keep_face_chk.isChecked():
-            cmd.append("-KeepCurrentFace")
-        else:
-            face = int(self.sbv2_test_face_spin.value())
-            if face >= 0:
-                cmd.extend(["-Face", str(face)])
-            else:
-                cmd.append("-KeepCurrentFace")
-
-        volume = float(self.sbv2_test_volume_slider.value()) / 100.0
-        cmd.extend(["-Volume", f"{volume:.2f}"])
-        if cfg.voice_pitch >= 0:
-            cmd.extend(["-Pitch", str(cfg.voice_pitch)])
-
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-            env=_with_utf8_env(),
-        )
-        detail = (proc.stdout or proc.stderr or "").strip()
-        return proc.returncode == 0, detail
-
     def _run_sbv2_test_task(self, cfg: AppConfig, text: str) -> dict:
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
@@ -963,8 +931,31 @@ class MainWindow(QMainWindow):
             "--output-dir", str(cfg.output_dir / "grok_tts_outputs"),
             "--pipe-name", cfg.pipe_name,
             "--main", str(cfg.main_index),
-            "--no-send-event",
         ]
+        sender_ps1 = PROJECT_ROOT / "send_voice_face_event.ps1"
+        if sender_ps1.exists():
+            cmd.extend(["--event-sender", str(sender_ps1)])
+        target_host = cfg.target_host.strip()
+        if cfg.remote_http and target_host:
+            cmd.append("--remote-http")
+        if target_host:
+            cmd.extend([
+                "--target-host", target_host,
+                "--target-port", str(cfg.target_port),
+                "--target-endpoint", cfg.target_endpoint,
+            ])
+            if cfg.target_token.strip():
+                cmd.extend(["--target-token", cfg.target_token.strip()])
+        if cfg.keep_current_face:
+            cmd.append("--keep-current-face")
+        elif cfg.face >= 0:
+            cmd.extend(["--face", str(cfg.face)])
+        else:
+            cmd.append("--keep-current-face")
+        if cfg.voice_volume >= 0:
+            cmd.extend(["--voice-volume", str(cfg.voice_volume)])
+        if cfg.voice_pitch >= 0:
+            cmd.extend(["--voice-pitch", str(cfg.voice_pitch)])
         if cfg.sbv2_model_file:
             cmd.extend(["--model-file", cfg.sbv2_model_file])
         if cfg.sbv2_server_url:
@@ -1000,13 +991,26 @@ class MainWindow(QMainWindow):
         if not text:
             self.sbv2_test_status_label.setText("テキスト未入力")
             return
-        try:
-            cfg = self._build_config()
-        except Exception as exc:
-            self.sbv2_test_status_label.setText("設定エラー")
-            self._append_log(f"[sbv2-test] config error: {exc}")
+        if self._pipeline_worker is None:
+            self.sbv2_test_status_label.setText("先に開始してください")
+            self._append_log("[sbv2-test] pipeline not running")
             return
-        self.sbv2_test_status_label.setText("音声生成中...")
+
+        cfg = self._active_runtime_cfg
+        if cfg is None:
+            self.sbv2_test_status_label.setText("実行設定がありません")
+            self._append_log("[sbv2-test] active runtime config missing")
+            return
+
+        target_host = cfg.target_host.strip() or "(pipe-local)"
+        self._append_log(
+            "[sbv2-test] use-sbv2-pre-step "
+            f"pipe={cfg.pipe_name} main={cfg.main_index} face={cfg.face} "
+            f"keep_face={cfg.keep_current_face} vol={cfg.voice_volume} pitch={cfg.voice_pitch} "
+            f"target={target_host}:{cfg.target_port}{cfg.target_endpoint}"
+        )
+
+        self.sbv2_test_status_label.setText("SBV2テスト実行中...")
         self._sbv2_test_worker = _TaskWorker(lambda: self._run_sbv2_test_task(cfg, text))
         self._sbv2_test_worker.result_ready.connect(self._on_sbv2_test_done)
         self._sbv2_test_worker.error_occurred.connect(self._on_sbv2_test_error)
@@ -1037,19 +1041,30 @@ class MainWindow(QMainWindow):
             self.sbv2_test_status_label.setText("設定エラー")
             self._append_log(f"[sbv2-test] config error: {exc}")
             return
-        if self._is_local_kks_running():
-            ok, detail = self._send_sbv2_test_event(cfg, merged_wav)
-            if ok:
-                self.sbv2_test_status_label.setText("KKS送信完了")
-                self._append_log("[sbv2-test] sent to KKS")
-                return
-            self._append_log(f"[sbv2-test] KKS send failed: {detail}")
+        if not bool(data.get("event_sent", True)):
+            self._append_log("[sbv2-test] event_sent=false")
+            if self._play_wav_in_gui(merged_wav):
+                self.sbv2_test_status_label.setText("KKS送信失敗: GUI再生中")
+                self._append_log(f"[sbv2-test] local play: {merged_wav.name}")
+            else:
+                self.sbv2_test_status_label.setText("KKS送信失敗")
+            return
 
-        if self._play_wav_in_gui(merged_wav):
-            self.sbv2_test_status_label.setText("KKS未起動: GUI再生中")
-            self._append_log(f"[sbv2-test] local play: {merged_wav.name}")
-        else:
-            self.sbv2_test_status_label.setText("GUI再生失敗")
+        female_hold = _wav_duration_sec(str(merged_wav))
+        if response_display:
+            self._append_log(f"[sbv2-test] main-send text='{response_display[:80]}' hold={female_hold:.2f}s")
+            worker = self._pipeline_worker
+            if worker is not None:
+                worker._send_subtitle(response_display, merged_wav.name, "StackFemale", hold_seconds=female_hold)
+            else:
+                self._append_log("[sbv2-test] pipeline worker missing: subtitle skipped")
+            delay = female_hold if female_hold else 0.0
+            if worker is not None:
+                worker._schedule_response_text(response_display, cfg.main_index, delay)
+            else:
+                self._append_log("[sbv2-test] pipeline worker missing: response_text skipped")
+        self.sbv2_test_status_label.setText("KKS送信完了")
+        self._append_log("[sbv2-test] audio sent + main-send subtitle/response_text")
 
     def _log_sbv2_health_snapshot(self, reason: str) -> None:
         try:
@@ -1726,6 +1741,10 @@ class MainWindow(QMainWindow):
         # パイプライン設定
         self.kks_root_edit.textChanged.connect(self._on_any_setting_changed)
         self.output_dir_edit.textChanged.connect(self._on_any_setting_changed)
+        self.save_faster_text_chk.toggled.connect(self._on_any_setting_changed)
+        self.save_source_wav_chk.toggled.connect(self._on_any_setting_changed)
+        self.save_sbv2_text_chk.toggled.connect(self._on_any_setting_changed)
+        self.save_sbv2_wav_chk.toggled.connect(self._on_any_setting_changed)
         self.faster_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_model_edit.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_device_combo.currentTextChanged.connect(self._on_any_setting_changed)

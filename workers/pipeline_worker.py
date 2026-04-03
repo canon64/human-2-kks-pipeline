@@ -377,7 +377,15 @@ class PipelineWorker(QObject):
         try:
             self.log.emit("[pipeline] フォルダ作成中...")
             self._cfg.wav_dir.mkdir(parents=True, exist_ok=True)
-            for sub in ("transcripts", "responses", "results", "grok_tts_outputs"):
+            for sub in (
+                "transcripts",
+                "responses",
+                "results",
+                "grok_tts_outputs",
+                "source_wavs",
+                "sbv2_inputs",
+                "sbv2_wavs",
+            ):
                 (self._cfg.output_dir / sub).mkdir(parents=True, exist_ok=True)
             self.log.emit(f"[pipeline] フォルダOK: wav={self._cfg.wav_dir}, out={self._cfg.output_dir}")
 
@@ -666,6 +674,36 @@ class PipelineWorker(QObject):
         with urllib.request.urlopen(req, timeout=120.0) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    @staticmethod
+    def _unique_output_path(path: Path) -> Path:
+        if not path.exists():
+            return path
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        return path.with_name(f"{path.stem}_{stamp}{path.suffix}")
+
+    def _save_text_file(self, path: Path, text: str) -> Optional[Path]:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            out = self._unique_output_path(path)
+            out.write_text(text, encoding="utf-8")
+            return out
+        except Exception as exc:
+            self.log.emit(f"[warn] テキスト保存失敗: {path} ({exc})")
+            return None
+
+    def _copy_output_file(self, src: Path, dst_dir: Path, *, out_name: Optional[str] = None) -> Optional[Path]:
+        try:
+            if not src.exists() or not src.is_file():
+                return None
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            target = dst_dir / (out_name or src.name)
+            target = self._unique_output_path(target)
+            shutil.copy2(src, target)
+            return target
+        except Exception as exc:
+            self.log.emit(f"[warn] ファイル保存失敗: {src} -> {dst_dir} ({exc})")
+            return None
+
     def _process_wav(self, wav: Path) -> None:
         if not self._wait_stable(wav):
             self.log.emit(f"[warn] 不安定/一時停止のためスキップ: {wav.name}")
@@ -689,7 +727,13 @@ class PipelineWorker(QObject):
             if not text:
                 self.log.emit(f"[info] 変換後に空テキスト: {wav.name}")
                 return
-            _save_text(self._cfg.output_dir / "transcripts" / f"{wav.stem}.txt", text + "\n")
+            if self._cfg.save_fasterwhisper_text:
+                saved_transcript = self._save_text_file(
+                    self._cfg.output_dir / "transcripts" / f"{wav.stem}.txt",
+                    raw_text + "\n",
+                )
+                if saved_transcript is not None:
+                    self.log.emit(f"[save] whisper_text: {saved_transcript}")
 
             if self._paused:
                 self.log.emit(f"[pause] 破棄: {text[:40]}")
@@ -701,6 +745,13 @@ class PipelineWorker(QObject):
         except Exception as exc:
             self.log.emit(f"[error] {wav.name}: {exc}")
         finally:
+            if self._cfg.save_source_wav:
+                saved_wav = self._copy_output_file(
+                    wav,
+                    self._cfg.output_dir / "source_wavs",
+                )
+                if saved_wav is not None:
+                    self.log.emit(f"[save] source_wav: {saved_wav}")
             try:
                 wav.unlink(missing_ok=True)
             except Exception:
@@ -1049,8 +1100,43 @@ class PipelineWorker(QObject):
                     self.log.emit(f"[tts-conv] {ln}")
             p_json = _last_json_line(p_ret.stdout)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            _save_text(self._cfg.output_dir / "results" / f"{stamp}.json",
-                       json.dumps(p_json, ensure_ascii=False, indent=2) + "\n")
+            merged_wav_raw = str(p_json.get("merged_wav", "")).strip()
+            merged_wav_path = Path(merged_wav_raw) if merged_wav_raw else None
+            run_dir = merged_wav_path.parent if merged_wav_path is not None else None
+
+            if self._cfg.save_sbv2_input_text:
+                sbv2_input_text = ""
+                line_texts = p_json.get("line_texts", [])
+                if isinstance(line_texts, list):
+                    lines = [str(v).strip() for v in line_texts if str(v).strip()]
+                    if lines:
+                        sbv2_input_text = "\n".join(lines)
+                if not sbv2_input_text:
+                    sbv2_input_text = str(p_json.get("response", "")).strip()
+                if sbv2_input_text:
+                    saved_sbv2_input = self._save_text_file(
+                        self._cfg.output_dir / "sbv2_inputs" / f"{stamp}.txt",
+                        sbv2_input_text + "\n",
+                    )
+                    if saved_sbv2_input is not None:
+                        p_json["sbv2_input_file"] = str(saved_sbv2_input)
+                        self.log.emit(f"[save] sbv2_input_text: {saved_sbv2_input}")
+
+            if self._cfg.save_sbv2_output_wav and merged_wav_path is not None:
+                saved_sbv2_wav = self._copy_output_file(
+                    merged_wav_path,
+                    self._cfg.output_dir / "sbv2_wavs",
+                    out_name=f"{stamp}.wav",
+                )
+                if saved_sbv2_wav is not None:
+                    p_json["saved_merged_wav"] = str(saved_sbv2_wav)
+                    self.log.emit(f"[save] sbv2_wav: {saved_sbv2_wav}")
+
+            _save_text(
+                self._cfg.output_dir / "results" / f"{stamp}.json",
+                json.dumps(p_json, ensure_ascii=False, indent=2) + "\n",
+            )
+
             female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
             response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
             response_send = str(p_json.get("response", response_original)).strip()
@@ -1067,22 +1153,17 @@ class PipelineWorker(QObject):
                 self.log.emit(f"[error] pipeline: {p_json.get('error', '')}")
                 response_original = ""
                 response_display = ""
-            # Grokの元レスポンス（変換前）から「今から流すね♡ ○○」を検出 → 動画切り替え
+            # 動画切り替え信号は VoiceFaceEventBridge 側へ移管するため、Human_2_kks 側からは送信しない
             matched_indices = self._find_video_indices_from_response(response_original)
             if matched_indices:
-                self._increment_play_counts(matched_indices)
-                delay = female_hold if female_hold else 0.0
-                self._schedule_video_switch(matched_indices, delay)
+                self.log.emit("[video] Human_2_kks からの動画切り替え送信は無効化中")
             # 生テキストをC#へ送信 → C#側でcoord/clothes検出・遅延実行
             if response_display:
                 delay = female_hold if female_hold else 0.0
                 self._schedule_response_text(response_display, self._cfg.main_index, delay)
             # TTS出力フォルダを削除
-            merged_wav = p_json.get("merged_wav", "")
-            if merged_wav:
-                run_dir = Path(merged_wav).parent
-                if run_dir.exists():
-                    shutil.rmtree(run_dir, ignore_errors=True)
+            if run_dir is not None and run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
         except Exception as exc:
             msg = str(exc)
             lower = msg.lower()

@@ -18,6 +18,10 @@ class AppConfig:
     # Pipeline
     kks_root: Path
     output_dir: Path
+    save_fasterwhisper_text: bool
+    save_source_wav: bool
+    save_sbv2_input_text: bool
+    save_sbv2_output_wav: bool
     faster_python: Path
     faster_model: str
     faster_device: str

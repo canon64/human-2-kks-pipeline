@@ -70,6 +70,10 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         device=window.device_combo.currentData(),
         kks_root=Path(window.kks_root_edit.text().strip()).expanduser().resolve(),
         output_dir=Path(window.output_dir_edit.text().strip()).expanduser().resolve(),
+        save_fasterwhisper_text=bool(window.save_faster_text_chk.isChecked()),
+        save_source_wav=bool(window.save_source_wav_chk.isChecked()),
+        save_sbv2_input_text=bool(window.save_sbv2_text_chk.isChecked()),
+        save_sbv2_output_wav=bool(window.save_sbv2_wav_chk.isChecked()),
         faster_python=Path(window.faster_python_edit.text().strip()).expanduser().resolve(),
         faster_model=window.faster_model_edit.currentText().strip() or "large-v3",
         faster_device=window.faster_device_combo.currentText().strip(),
@@ -146,6 +150,10 @@ def save_config(
         "post_roll_seconds": cfg.post_roll_seconds,
         "kks_root": str(cfg.kks_root),
         "output_dir": str(cfg.output_dir),
+        "save_fasterwhisper_text": cfg.save_fasterwhisper_text,
+        "save_source_wav": cfg.save_source_wav,
+        "save_sbv2_input_text": cfg.save_sbv2_input_text,
+        "save_sbv2_output_wav": cfg.save_sbv2_output_wav,
         "faster_python": str(cfg.faster_python),
         "faster_model": cfg.faster_model,
         "faster_device": cfg.faster_device,
@@ -235,6 +243,10 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.post_roll_spin.setValue(f("post_roll_seconds", window.post_roll_spin.value()))
         window.kks_root_edit.setText(s("kks_root", window.kks_root_edit.text()))
         window.output_dir_edit.setText(s("output_dir", window.output_dir_edit.text()))
+        window.save_faster_text_chk.setChecked(b("save_fasterwhisper_text", True))
+        window.save_source_wav_chk.setChecked(b("save_source_wav", False))
+        window.save_sbv2_text_chk.setChecked(b("save_sbv2_input_text", True))
+        window.save_sbv2_wav_chk.setChecked(b("save_sbv2_output_wav", False))
         window.faster_python_edit.setText(s("faster_python", window.faster_python_edit.text()))
         window.faster_model_edit.setCurrentText(s("faster_model", window.faster_model_edit.currentText()))
         window.faster_device_combo.setCurrentText(s("faster_device", window.faster_device_combo.currentText()))
