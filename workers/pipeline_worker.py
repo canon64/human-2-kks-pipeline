@@ -419,6 +419,14 @@ class PipelineWorker(QObject):
                         self.log.emit(f"[manual-conv] grok: '{raw_text}' -> '{text_grok}'")
                     if text_display != raw_text:
                         self.log.emit(f"[manual-conv] display: '{raw_text}' -> '{text_display}'")
+                    if self._cfg.save_fasterwhisper_text:
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        saved = self._save_text_file(
+                            self._cfg.output_dir / "transcripts" / f"{stamp}.txt",
+                            raw_text + "\n",
+                        )
+                        if saved is not None:
+                            self.log.emit(f"[save] manual_text: {saved}")
                     self._process_text(text_grok, manual=True, display_text=text_display)
                 except queue.Empty:
                     pass

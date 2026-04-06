@@ -249,6 +249,11 @@ class VoiceGateRecorder:
         self.pre_roll_frames: deque[np.ndarray] = deque()
         self.pre_roll_total_samples = 0
 
+        # 音声レベル定期ログ用
+        self._level_log_next_time: float = 0.0
+        self._level_log_interval_sec: float = 5.0
+        self._level_window_peak: float = -120.0
+
         self._tcp_send_queue: queue.Queue[Optional[Path]] = queue.Queue(maxsize=256)
         self._tcp_send_thread: Optional[threading.Thread] = None
         self._control_q: queue.Queue[str] = queue.Queue(maxsize=128)
@@ -434,6 +439,63 @@ class VoiceGateRecorder:
         mono = indata[:, 0].copy()
         self.audio_q.put_nowait(mono)
 
+    def _log_device_info(self) -> None:
+        """選択デバイスの情報をログ出力する。"""
+        device = self.cfg.device
+        try:
+            if device is None:
+                info = sd.query_devices(kind="input")
+                self._log(f"[recorder] device=system_default name={info.get('name', '?')!r} "
+                          f"default_sr={info.get('default_samplerate', '?')} "
+                          f"max_in_ch={info.get('max_input_channels', '?')}")
+            else:
+                info = sd.query_devices(device)
+                host_api_idx = int(info.get("hostapi", -1))
+                host_apis = sd.query_hostapis()
+                host_api_name = ""
+                if 0 <= host_api_idx < len(host_apis):
+                    host_api_name = str(host_apis[host_api_idx].get("name", ""))
+                self._log(f"[recorder] device={device} name={info.get('name', '?')!r} "
+                          f"host_api={host_api_name!r} "
+                          f"default_sr={info.get('default_samplerate', '?')} "
+                          f"max_in_ch={info.get('max_input_channels', '?')}")
+                requested_sr = self.cfg.sample_rate
+                default_sr = int(info.get("default_samplerate", 0))
+                if default_sr > 0 and default_sr != requested_sr:
+                    self._log(
+                        f"[recorder][warn] requested sample_rate={requested_sr} "
+                        f"differs from device default {default_sr}. "
+                        f"WASAPI devices may reject non-native rates. "
+                        f"If open fails, try changing to {default_sr}."
+                    )
+        except Exception as exc:
+            self._log(f"[recorder][warn] could not query device info: {exc}")
+
+    @staticmethod
+    def _classify_portaudio_error(exc: Exception) -> str:
+        msg = str(exc).lower()
+        if "invalid sample rate" in msg or "sample rate" in msg:
+            return (
+                "サンプルレートがデバイスの対応レートと一致しません。"
+                "WASAPIデバイスの場合、デバイスのデフォルトレート（通常48000）に変更してください。"
+            )
+        if "invalid number of channels" in msg or "channels" in msg:
+            return (
+                "チャンネル数がデバイスに対応していません。"
+                "デバイスがステレオ専用の場合があります。"
+            )
+        if "unanticipated host error" in msg or "host error" in msg:
+            return (
+                "ホストAPIエラー。Windowsのマイクプライバシー設定で"
+                "「デスクトップアプリがマイクにアクセスできるようにする」がOFFの可能性があります。"
+                "（設定 → プライバシーとセキュリティ → マイク）"
+            )
+        if "no default input" in msg or "no input" in msg or "invalid device" in msg:
+            return "指定したデバイスが見つかりません。デバイスリストを更新してください。"
+        if "device unavailable" in msg or "busy" in msg:
+            return "デバイスが他のアプリに占有されています。"
+        return ""
+
     def run(self) -> None:
         if self.block_samples <= 0:
             raise ValueError("block size must be positive.")
@@ -444,20 +506,38 @@ class VoiceGateRecorder:
         if self.post_roll_keep_samples < 0:
             raise ValueError("post-roll must be non-negative.")
 
+        self._log_device_info()
+        self._log(
+            f"[recorder] opening stream: device={self.cfg.device!r} "
+            f"sample_rate={self.cfg.sample_rate} channels=1 dtype=int16 "
+            f"blocksize={self.block_samples} latency=low"
+        )
+
         self._start_tcp_sender()
         self._start_external_control_listener()
         try:
-            stream = sd.InputStream(
-                samplerate=self.cfg.sample_rate,
-                channels=1,
-                dtype="int16",
-                blocksize=self.block_samples,
-                device=self.cfg.device,
-                callback=self.audio_callback,
-                latency="low",
-            )
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.cfg.sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=self.block_samples,
+                    device=self.cfg.device,
+                    callback=self.audio_callback,
+                    latency="low",
+                )
+            except Exception as open_exc:
+                hint = self._classify_portaudio_error(open_exc)
+                self._log(f"[recorder][error] ストリームのオープンに失敗しました: {open_exc}")
+                if hint:
+                    self._log(f"[recorder][hint] {hint}")
+                raise
 
             with stream:
+                self._log(
+                    f"[recorder] ストリームオープン成功 active={stream.active} "
+                    f"device={stream.device} samplerate={stream.samplerate}"
+                )
                 self._log(
                     "[info] Listening. "
                     f"threshold={self.cfg.threshold_dbfs} dBFS, "
@@ -469,6 +549,8 @@ class VoiceGateRecorder:
                 if self._external_control_enabled():
                     self._log("[info] External control mode is enabled (push-to-talk by start/stop command).")
                 self._log("[info] Press Ctrl+C to stop.")
+                import time as _time
+                self._level_log_next_time = _time.monotonic() + self._level_log_interval_sec
                 while self._running:
                     self._drain_control_queue()
                     try:
@@ -493,9 +575,28 @@ class VoiceGateRecorder:
             removed = self.pre_roll_frames.popleft()
             self.pre_roll_total_samples -= len(removed)
 
+    def _maybe_log_level(self, current_dbfs: float) -> None:
+        import time as _time
+        now = _time.monotonic()
+        if current_dbfs > self._level_window_peak:
+            self._level_window_peak = current_dbfs
+        if now >= self._level_log_next_time:
+            bar_len = 20
+            ratio = max(0.0, min(1.0, (self._level_window_peak - (-80.0)) / 80.0))
+            bar = "#" * int(ratio * bar_len) + "." * (bar_len - int(ratio * bar_len))
+            status = "録音中" if self.recording else "待機中"
+            self._log(
+                f"[level] {status} peak={self._level_window_peak:.1f}dBFS "
+                f"threshold={self.cfg.threshold_dbfs:.1f}dBFS [{bar}]"
+            )
+            self._level_window_peak = -120.0
+            self._level_log_next_time = now + self._level_log_interval_sec
+
     def process_chunk(self, chunk: np.ndarray) -> None:
         current_dbfs = dbfs_from_int16(chunk)
         is_voice = current_dbfs >= self.cfg.threshold_dbfs
+
+        self._maybe_log_level(current_dbfs)
 
         if self._external_control_enabled():
             self._process_chunk_external(chunk, current_dbfs)
