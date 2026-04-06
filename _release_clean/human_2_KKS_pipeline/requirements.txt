@@ -1,0 +1,7 @@
+PyQt6>=6.6
+numpy>=1.24
+sounddevice>=0.4.6
+faster-whisper>=1.1.0
+watchdog>=4.0.0
+selenium>=4.15
+undetected-chromedriver>=3.5

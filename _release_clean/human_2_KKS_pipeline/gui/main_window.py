@@ -795,6 +795,14 @@ class MainWindow(QMainWindow):
         self._append_log(f"[fw-test] text original: {raw_text[:80]}")
         self._append_log(f"[fw-test] text send: {text_send[:80]}")
         self._append_log(f"[fw-test] text display: {text_display[:80]}")
+        if cfg.save_fasterwhisper_text:
+            try:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                save_path = cfg.output_dir / "transcripts" / f"{stamp}.txt"
+                _save_text(save_path, raw_text + "\n")
+                self._append_log(f"[save] fw_test_manual_text: {save_path}")
+            except Exception as exc:
+                self._append_log(f"[save] fw_test_manual_text failed: {exc}")
 
     def _run_fw_test_transcribe(self, wav_path: Path) -> dict:
         cfg = self._build_config()
@@ -845,6 +853,17 @@ class MainWindow(QMainWindow):
             self._append_log(f"[fw-test] original: {text_original[:80]}")
             self._append_log(f"[fw-test] send: {text_send[:80]}")
             self._append_log(f"[fw-test] display: {text_display[:80]}")
+            if text_original:
+                try:
+                    cfg = self._build_config()
+                    if cfg.save_fasterwhisper_text:
+                        audio_path = data.get("audio_path", "")
+                        stem = Path(audio_path).stem if audio_path else datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        save_path = cfg.output_dir / "transcripts" / f"{stem}.txt"
+                        _save_text(save_path, text_original + "\n")
+                        self._append_log(f"[save] fw_test_text: {save_path}")
+                except Exception as exc:
+                    self._append_log(f"[save] fw_test_text failed: {exc}")
         else:
             err = str(data.get("error", "unknown error"))
             self.fw_test_original_edit.setPlainText("")
@@ -1041,6 +1060,35 @@ class MainWindow(QMainWindow):
             self.sbv2_test_status_label.setText("設定エラー")
             self._append_log(f"[sbv2-test] config error: {exc}")
             return
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        if cfg.save_sbv2_input_text:
+            line_texts = data.get("line_texts", [])
+            sbv2_input_text = ""
+            if isinstance(line_texts, list):
+                lines = [str(v).strip() for v in line_texts if str(v).strip()]
+                if lines:
+                    sbv2_input_text = "\n".join(lines)
+            if not sbv2_input_text:
+                sbv2_input_text = str(data.get("response", "")).strip()
+            if sbv2_input_text:
+                try:
+                    save_path = cfg.output_dir / "sbv2_inputs" / f"{stamp}.txt"
+                    _save_text(save_path, sbv2_input_text + "\n")
+                    self._append_log(f"[save] sbv2_input_text: {save_path}")
+                except Exception as exc:
+                    self._append_log(f"[save] sbv2_input_text failed: {exc}")
+
+        if cfg.save_sbv2_output_wav:
+            try:
+                dst_dir = cfg.output_dir / "sbv2_wavs"
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                dst = dst_dir / f"{stamp}.wav"
+                shutil.copy2(merged_wav, dst)
+                self._append_log(f"[save] sbv2_wav: {dst}")
+            except Exception as exc:
+                self._append_log(f"[save] sbv2_wav failed: {exc}")
+
         if not bool(data.get("event_sent", True)):
             self._append_log("[sbv2-test] event_sent=false")
             if self._play_wav_in_gui(merged_wav):
