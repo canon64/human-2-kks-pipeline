@@ -95,8 +95,18 @@ def main() -> int:
     try:
         model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
     except Exception as exc:
-        print(f"[server] ERROR: model load failed: {exc}", flush=True)
-        return 1
+        cuda_hints = ("cublas", "cuda", "cudnn", "dll is not found", "cannot be loaded")
+        if any(h in str(exc).lower() for h in cuda_hints) and args.device != "cpu":
+            print(f"[server] WARN: GPU load failed ({exc}). Retrying with CPU+int8 ...", flush=True)
+            try:
+                model = WhisperModel(args.model, device="cpu", compute_type="int8")
+                print("[server] Loaded on CPU (int8). Transcription will be slower.", flush=True)
+            except Exception as exc2:
+                print(f"[server] ERROR: CPU fallback also failed: {exc2}", flush=True)
+                return 1
+        else:
+            print(f"[server] ERROR: model load failed: {exc}", flush=True)
+            return 1
 
     print(f"[server] Ready on {args.host}:{args.port}", flush=True)
 
