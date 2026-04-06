@@ -76,6 +76,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Install faster-whisper and its dependencies manually
+:: faster-whisper 0.10.1 requires av==10.* which has no Python 3.12 wheel,
+:: so we install with --no-deps and provide compatible versions separately.
+echo.
+echo Installing faster-whisper (CUDA 11/12 compatible)...
+"%PIP_EXE%" install faster-whisper==0.10.1 --no-deps
+if errorlevel 1 (
+    echo [ERROR] Failed to install faster-whisper.
+    pause
+    exit /b 1
+)
+"%PIP_EXE%" install "av>=12,<13" "ctranslate2==3.24.0"
+if errorlevel 1 (
+    echo [ERROR] Failed to install av/ctranslate2.
+    pause
+    exit /b 1
+)
+
 echo.
 echo === Setup complete ===
 
