@@ -59,7 +59,7 @@ echo.
 echo Upgrading pip...
 "%PY_EXE%" -m pip install --upgrade pip
 echo Installing build tools...
-"%PY_EXE%" -m pip install "setuptools<71" --no-warn-script-location -q
+"%PY_EXE%" -m pip install setuptools==70.3.0 --no-warn-script-location -q
 if errorlevel 1 (
     echo [ERROR] Failed to install setuptools.
     pause
