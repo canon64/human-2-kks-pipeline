@@ -184,8 +184,13 @@ class MainWindow(QMainWindow):
     # ---- UI構築 ----
 
     def _build_ui(self) -> None:
-        root = QWidget(self)
-        self.setCentralWidget(root)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        root = QWidget()
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
         layout = QVBoxLayout(root)
 
         self.tabs = QTabWidget()
