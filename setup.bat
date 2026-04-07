@@ -3,6 +3,9 @@ setlocal
 
 cd /d "%~dp0"
 
+set "SETUP_LOG=%~dp0setup_log.txt"
+echo === setup started %date% %time% === > "%SETUP_LOG%"
+
 echo === human_2_KKS_pipeline setup ===
 echo.
 
@@ -57,17 +60,21 @@ echo.
 
 :: Upgrade pip and install build tools
 echo Upgrading pip...
-"%PY_EXE%" -m pip install --upgrade pip
-echo Installing build tools...
-"%PY_EXE%" -m pip install setuptools==70.3.0 --no-warn-script-location
+echo [step] pip upgrade >> "%SETUP_LOG%"
+"%PY_EXE%" -m pip install --upgrade pip >> "%SETUP_LOG%" 2>&1
+echo Installing build tools (setuptools)...
+echo [step] setuptools install >> "%SETUP_LOG%"
+"%PY_EXE%" -m pip install setuptools==70.3.0 --no-warn-script-location >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to install setuptools.
+    echo [ERROR] Failed to install setuptools. See setup_log.txt
     pause
     exit /b 1
 )
-"%PY_EXE%" -m pip install wheel --no-warn-script-location
+echo Installing build tools (wheel)...
+echo [step] wheel install >> "%SETUP_LOG%"
+"%PY_EXE%" -m pip install wheel --no-warn-script-location >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to install wheel.
+    echo [ERROR] Failed to install wheel. See setup_log.txt
     pause
     exit /b 1
 )
