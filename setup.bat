@@ -85,6 +85,14 @@ set "CUDA_MARKER=%CUDA_DLLS_DIR%\cublas64_11.dll"
 set "SEVEN_ZIP=%~dp0_tools\7za.exe"
 set "CUDA_7Z=%~dp0_tools\cuBLAS_cuDNN_CUDA11_v4.7z"
 set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA11_win_v4.7z"
+echo [step] CUDA DLL check: SEVEN_ZIP=%SEVEN_ZIP% >> "%SETUP_LOG%"
+echo [step] CUDA_MARKER=%CUDA_MARKER% >> "%SETUP_LOG%"
+if not exist "%SEVEN_ZIP%" (
+    echo [ERROR] _tools\7za.exe not found. >> "%SETUP_LOG%"
+    echo [ERROR] _tools\7za.exe not found.
+    pause
+    exit /b 1
+)
 :: CUDA12版が残っていたら削除（CUDA11版に切り替え）
 if exist "%CUDA_DLLS_DIR%\cublas64_12.dll" (
     echo Removing old CUDA12 DLLs...
@@ -92,20 +100,22 @@ if exist "%CUDA_DLLS_DIR%\cublas64_12.dll" (
 )
 if not exist "%CUDA_MARKER%" (
     echo.
-    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~140MB^) ...
-    echo [DEBUG] CUDA_URL=%CUDA_URL%
-    echo [DEBUG] CUDA_7Z=%CUDA_7Z%
-    curl -L "%CUDA_URL%" -o "%CUDA_7Z%"
+    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~432MB^) ...
+    echo [step] CUDA download start >> "%SETUP_LOG%"
+    curl -L "%CUDA_URL%" -o "%CUDA_7Z%" >> "%SETUP_LOG%" 2>&1
     if errorlevel 1 (
-        echo [ERROR] Failed to download CUDA DLLs.
+        echo [ERROR] Failed to download CUDA DLLs. See setup_log.txt >> "%SETUP_LOG%"
+        echo [ERROR] Failed to download CUDA DLLs. See setup_log.txt
         pause
         exit /b 1
     )
     echo Extracting CUDA DLLs...
+    echo [step] CUDA extract >> "%SETUP_LOG%"
     if not exist "%CUDA_DLLS_DIR%" mkdir "%CUDA_DLLS_DIR%"
-    "%SEVEN_ZIP%" e "%CUDA_7Z%" -o"%CUDA_DLLS_DIR%" -y
+    "%SEVEN_ZIP%" e "%CUDA_7Z%" -o"%CUDA_DLLS_DIR%" -y >> "%SETUP_LOG%" 2>&1
     if errorlevel 1 (
-        echo [ERROR] Failed to extract CUDA DLLs.
+        echo [ERROR] Failed to extract CUDA DLLs. See setup_log.txt >> "%SETUP_LOG%"
+        echo [ERROR] Failed to extract CUDA DLLs. See setup_log.txt
         pause
         exit /b 1
     )
@@ -123,33 +133,35 @@ if not exist "%CUDA_MARKER%" (
 :: Install requirements
 echo.
 echo Installing packages...
-"%PIP_EXE%" install -r requirements.txt
+echo [step] requirements.txt >> "%SETUP_LOG%"
+"%PIP_EXE%" install -r requirements.txt >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to install packages.
+    echo [ERROR] Failed to install packages. See setup_log.txt
     pause
     exit /b 1
 )
 
 :: Install faster-whisper and its dependencies manually
-:: faster-whisper 0.10.1 requires av==10.* which has no Python 3.12 wheel,
-:: so we install with --no-deps and provide compatible versions separately.
 echo.
 echo Installing faster-whisper (CUDA 11/12 compatible)...
-"%PIP_EXE%" install faster-whisper==0.10.1 --no-deps
+echo [step] faster-whisper >> "%SETUP_LOG%"
+"%PIP_EXE%" install faster-whisper==0.10.1 --no-deps >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to install faster-whisper.
+    echo [ERROR] Failed to install faster-whisper. See setup_log.txt
     pause
     exit /b 1
 )
-"%PIP_EXE%" install "av>=12,<13" "ctranslate2==3.24.0"
+echo [step] av + ctranslate2 >> "%SETUP_LOG%"
+"%PIP_EXE%" install "av>=12,<13" "ctranslate2==3.24.0" >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to install av/ctranslate2.
+    echo [ERROR] Failed to install av/ctranslate2. See setup_log.txt
     pause
     exit /b 1
 )
 
 echo.
 echo === Setup complete ===
+echo [step] setup complete >> "%SETUP_LOG%"
 
 :: Direct launch: no pause needed. Double-click: pause to show result.
 if "%~1"=="--no-pause" exit /b 0
