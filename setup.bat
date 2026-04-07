@@ -97,6 +97,11 @@ if not exist "%CUDA_MARKER%" (
         exit /b 1
     )
     del "%CUDA_7Z%"
+    :: cudart64_11.dll を pip パッケージから取得してコピー
+    echo Downloading CUDA runtime (cudart64_11.dll) ...
+    "%PIP_EXE%" install nvidia-cuda-runtime-cu11 --target "%~dp0python\_cudart_tmp" -q
+    "%PY_EXE%" -c "import shutil,pathlib; src=list(pathlib.Path(r'%~dp0python\_cudart_tmp').rglob('cudart64_110.dll')); dst=pathlib.Path(r'%CUDA_DLLS_DIR%'/'cudart64_11.dll'); shutil.copy2(src[0],dst) if src else print('[WARN] cudart64_110.dll not found')"
+    rd /s /q "%~dp0python\_cudart_tmp"
     echo CUDA DLLs installed.
 ) else (
     echo CUDA DLLs already present. Skipping.
