@@ -68,13 +68,18 @@ if errorlevel 1 (
 
 :: Download and extract CUDA DLLs (cuBLAS + cuDNN for ctranslate2 3.x)
 set "CUDA_DLLS_DIR=%~dp0python\cuda_dlls"
-set "CUDA_MARKER=%CUDA_DLLS_DIR%\cublas64_12.dll"
+set "CUDA_MARKER=%CUDA_DLLS_DIR%\cublas64_11.dll"
 set "SEVEN_ZIP=%~dp0_tools\7za.exe"
-set "CUDA_7Z=%~dp0_tools\cuBLAS_cuDNN_CUDA12_v1.7z"
-set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA12_win_v1.7z"
+set "CUDA_7Z=%~dp0_tools\cuBLAS_cuDNN_CUDA11_v4.7z"
+set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA11_win_v4.7z"
+:: CUDA12版が残っていたら削除（CUDA11版に切り替え）
+if exist "%CUDA_DLLS_DIR%\cublas64_12.dll" (
+    echo Removing old CUDA12 DLLs...
+    rd /s /q "%CUDA_DLLS_DIR%"
+)
 if not exist "%CUDA_MARKER%" (
     echo.
-    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~447MB^) ...
+    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~140MB^) ...
     echo [DEBUG] CUDA_URL=%CUDA_URL%
     echo [DEBUG] CUDA_7Z=%CUDA_7Z%
     curl -L "%CUDA_URL%" -o "%CUDA_7Z%"
