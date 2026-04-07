@@ -93,11 +93,16 @@ if not exist "%SEVEN_ZIP%" (
     pause
     exit /b 1
 )
+echo [step] 7za.exe found >> "%SETUP_LOG%"
 :: CUDA12版が残っていたら削除（CUDA11版に切り替え）
+echo [step] checking CUDA12 dll >> "%SETUP_LOG%"
 if exist "%CUDA_DLLS_DIR%\cublas64_12.dll" (
+    echo [step] removing old CUDA12 DLLs >> "%SETUP_LOG%"
     echo Removing old CUDA12 DLLs...
     rd /s /q "%CUDA_DLLS_DIR%"
+    echo [step] CUDA12 removed >> "%SETUP_LOG%"
 )
+echo [step] checking CUDA_MARKER >> "%SETUP_LOG%"
 if not exist "%CUDA_MARKER%" (
     echo.
     echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~432MB^) ...
