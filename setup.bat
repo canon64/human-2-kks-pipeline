@@ -105,7 +105,7 @@ if exist "%CUDA_DLLS_DIR%\cublas64_12.dll" (
 echo [step] checking CUDA_MARKER >> "%SETUP_LOG%"
 if not exist "%CUDA_MARKER%" (
     echo.
-    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~432MB^) ...
+    echo Downloading CUDA runtime DLLs ^(cuBLAS + cuDNN, ~432MB^) ...
     echo [step] CUDA download start >> "%SETUP_LOG%"
     curl -L "%CUDA_URL%" -o "%CUDA_7Z%" >> "%SETUP_LOG%" 2>&1
     if errorlevel 1 (
@@ -126,7 +126,7 @@ if not exist "%CUDA_MARKER%" (
     )
     del "%CUDA_7Z%"
     :: cudart64_11.dll を pip パッケージから取得してコピー
-    echo Downloading CUDA runtime (cudart64_11.dll) ...
+    echo Downloading CUDA runtime ^(cudart64_11.dll^) ...
     "%PIP_EXE%" install nvidia-cuda-runtime-cu11 --target "%~dp0python\_cudart_tmp" -q
     "%PY_EXE%" "%~dp0_tools\copy_cudart.py" "%~dp0python\_cudart_tmp" "%CUDA_DLLS_DIR%"
     rd /s /q "%~dp0python\_cudart_tmp"
