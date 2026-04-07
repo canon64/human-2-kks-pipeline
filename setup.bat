@@ -59,11 +59,40 @@ echo.
 echo Upgrading pip...
 "%PY_EXE%" -m pip install --upgrade pip
 echo Installing build tools...
-"%PY_EXE%" -m pip install --upgrade setuptools wheel
+"%PY_EXE%" -m pip install "setuptools<71" wheel
 if errorlevel 1 (
     echo [ERROR] Failed to install setuptools/wheel.
     pause
     exit /b 1
+)
+
+:: Download and extract CUDA DLLs (cuBLAS + cuDNN for ctranslate2 3.x)
+set "CUDA_DLLS_DIR=%~dp0python\cuda_dlls"
+set "CUDA_MARKER=%CUDA_DLLS_DIR%\cublas64_12.dll"
+set "SEVEN_ZIP=%~dp0_tools\7za.exe"
+if not exist "%CUDA_MARKER%" (
+    echo.
+    echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~447MB^) ...
+    set "CUDA_7Z=%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
+    set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA12_win_v1.7z"
+    curl -L "%CUDA_URL%" -o "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
+    if errorlevel 1 (
+        echo [ERROR] Failed to download CUDA DLLs.
+        pause
+        exit /b 1
+    )
+    echo Extracting CUDA DLLs...
+    if not exist "%CUDA_DLLS_DIR%" mkdir "%CUDA_DLLS_DIR%"
+    "%SEVEN_ZIP%" e "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z" -o"%CUDA_DLLS_DIR%" -y
+    if errorlevel 1 (
+        echo [ERROR] Failed to extract CUDA DLLs.
+        pause
+        exit /b 1
+    )
+    del "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
+    echo CUDA DLLs installed.
+) else (
+    echo CUDA DLLs already present. Skipping.
 )
 
 :: Install requirements

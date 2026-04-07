@@ -5,6 +5,7 @@ cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONLEGACYWINDOWSSTDIO=0"
+set "PATH=%~dp0python\cuda_dlls;%PATH%"
 set "_NO_PAUSE=0"
 
 if /I "%~1"=="--no-pause" (
