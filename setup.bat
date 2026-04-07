@@ -59,7 +59,7 @@ echo.
 echo Upgrading pip...
 "%PY_EXE%" -m pip install --upgrade pip
 echo Installing build tools...
-"%PY_EXE%" -m pip install "setuptools<71" wheel
+"%PY_EXE%" -m pip install "setuptools<71" wheel --no-warn-script-location
 if errorlevel 1 (
     echo [ERROR] Failed to install setuptools/wheel.
     pause
