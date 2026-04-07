@@ -70,12 +70,14 @@ if errorlevel 1 (
 set "CUDA_DLLS_DIR=%~dp0python\cuda_dlls"
 set "CUDA_MARKER=%CUDA_DLLS_DIR%\cublas64_12.dll"
 set "SEVEN_ZIP=%~dp0_tools\7za.exe"
+set "CUDA_7Z=%~dp0_tools\cuBLAS_cuDNN_CUDA12_v1.7z"
+set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA12_win_v1.7z"
 if not exist "%CUDA_MARKER%" (
     echo.
     echo Downloading CUDA runtime DLLs (cuBLAS + cuDNN, ~447MB^) ...
-    set "CUDA_7Z=%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
-    set "CUDA_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/libs/cuBLAS.and.cuDNN_CUDA12_win_v1.7z"
-    curl -L "%CUDA_URL%" -o "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
+    echo [DEBUG] CUDA_URL=%CUDA_URL%
+    echo [DEBUG] CUDA_7Z=%CUDA_7Z%
+    curl -L "%CUDA_URL%" -o "%CUDA_7Z%"
     if errorlevel 1 (
         echo [ERROR] Failed to download CUDA DLLs.
         pause
@@ -83,13 +85,13 @@ if not exist "%CUDA_MARKER%" (
     )
     echo Extracting CUDA DLLs...
     if not exist "%CUDA_DLLS_DIR%" mkdir "%CUDA_DLLS_DIR%"
-    "%SEVEN_ZIP%" e "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z" -o"%CUDA_DLLS_DIR%" -y
+    "%SEVEN_ZIP%" e "%CUDA_7Z%" -o"%CUDA_DLLS_DIR%" -y
     if errorlevel 1 (
         echo [ERROR] Failed to extract CUDA DLLs.
         pause
         exit /b 1
     )
-    del "%TEMP%\cuBLAS_cuDNN_CUDA12_v1.7z"
+    del "%CUDA_7Z%"
     echo CUDA DLLs installed.
 ) else (
     echo CUDA DLLs already present. Skipping.

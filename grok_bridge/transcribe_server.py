@@ -73,6 +73,55 @@ def _build_handler(model, default_language: str, default_beam: int):
     return Handler
 
 
+def _log_env_info() -> None:
+    """起動時環境情報をログ出力する"""
+    import sys
+    import os
+    print(f"[server] Python: {sys.executable}", flush=True)
+    print(f"[server] Python version: {sys.version}", flush=True)
+
+    # PATH内のcuda_dllsフォルダを表示
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    cuda_paths = [p for p in path_dirs if "cuda" in p.lower() or "cudnn" in p.lower() or "cublas" in p.lower()]
+    if cuda_paths:
+        print(f"[server] CUDA-related PATH entries:", flush=True)
+        for p in cuda_paths:
+            print(f"[server]   {p}", flush=True)
+    else:
+        print(f"[server] No CUDA-related PATH entries found", flush=True)
+
+    # cuda_dlls フォルダの存在確認
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for candidate in [
+        os.path.join(script_dir, "..", "python", "cuda_dlls"),
+        os.path.join(script_dir, "..", "..", "python", "cuda_dlls"),
+    ]:
+        candidate = os.path.normpath(candidate)
+        if os.path.isdir(candidate):
+            dlls = [f for f in os.listdir(candidate) if f.endswith(".dll")]
+            print(f"[server] cuda_dlls found: {candidate}", flush=True)
+            for dll in sorted(dlls):
+                print(f"[server]   {dll}", flush=True)
+            break
+    else:
+        print(f"[server] cuda_dlls folder not found (GPU may fail without CUDA Toolkit)", flush=True)
+
+    # ctranslate2 バージョン
+    try:
+        import ctranslate2
+        print(f"[server] ctranslate2: {ctranslate2.__version__}", flush=True)
+        print(f"[server] ctranslate2 CUDA support: {ctranslate2.get_cuda_device_count()} device(s)", flush=True)
+    except Exception as e:
+        print(f"[server] ctranslate2 info failed: {e}", flush=True)
+
+    # faster-whisper バージョン
+    try:
+        import faster_whisper
+        print(f"[server] faster-whisper: {faster_whisper.__version__}", flush=True)
+    except Exception as e:
+        print(f"[server] faster-whisper version check failed: {e}", flush=True)
+
+
 def main() -> int:
     force_stdio_utf8()
     parser = argparse.ArgumentParser(description="Persistent faster-whisper transcription server.")
@@ -85,6 +134,8 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=18760)
     args = parser.parse_args()
 
+    _log_env_info()
+
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -95,9 +146,10 @@ def main() -> int:
     try:
         model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
     except Exception as exc:
+        print(f"[server] ERROR detail: {exc}", flush=True)
         cuda_hints = ("cublas", "cuda", "cudnn", "dll is not found", "cannot be loaded")
         if any(h in str(exc).lower() for h in cuda_hints) and args.device != "cpu":
-            print(f"[server] WARN: GPU load failed ({exc}). Retrying with CPU+int8 ...", flush=True)
+            print(f"[server] WARN: GPU load failed. Retrying with CPU+int8 ...", flush=True)
             try:
                 model = WhisperModel(args.model, device="cpu", compute_type="int8")
                 print("[server] Loaded on CPU (int8). Transcription will be slower.", flush=True)
