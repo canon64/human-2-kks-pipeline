@@ -128,7 +128,7 @@ if not exist "%CUDA_MARKER%" (
     :: cudart64_11.dll を pip パッケージから取得してコピー
     echo Downloading CUDA runtime (cudart64_11.dll) ...
     "%PIP_EXE%" install nvidia-cuda-runtime-cu11 --target "%~dp0python\_cudart_tmp" -q
-    "%PY_EXE%" -c "import shutil,pathlib; src=list(pathlib.Path(r'%~dp0python\_cudart_tmp').rglob('cudart64_110.dll')); dst=pathlib.Path(r'%CUDA_DLLS_DIR%'/'cudart64_11.dll'); shutil.copy2(src[0],dst) if src else print('[WARN] cudart64_110.dll not found')"
+    "%PY_EXE%" "%~dp0_tools\copy_cudart.py" "%~dp0python\_cudart_tmp" "%CUDA_DLLS_DIR%"
     rd /s /q "%~dp0python\_cudart_tmp"
     echo CUDA DLLs installed.
 ) else (
@@ -157,7 +157,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [step] av + ctranslate2 >> "%SETUP_LOG%"
-"%PIP_EXE%" install "av>=12,<13" "ctranslate2==3.24.0" >> "%SETUP_LOG%" 2>&1
+"%PIP_EXE%" install "av>=12" "ctranslate2==3.24.0" >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] Failed to install av/ctranslate2. See setup_log.txt
     pause
