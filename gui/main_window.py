@@ -1827,7 +1827,7 @@ class MainWindow(QMainWindow):
         self.external_text_dedupe_spin.valueChanged.connect(self._on_any_setting_changed)
 
         # フィルター / 変換
-        self.filter_edit.textChanged.connect(self._on_any_setting_changed)
+        self.filter_table.itemChanged.connect(self._on_any_setting_changed)
         self.conversion_table.itemChanged.connect(self._on_any_setting_changed)
         self.chrome_profile_combo.currentIndexChanged.connect(self._on_any_setting_changed)
         self.chrome_port_spin.valueChanged.connect(self._on_any_setting_changed)
