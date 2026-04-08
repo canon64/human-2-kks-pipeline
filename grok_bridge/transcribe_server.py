@@ -8,12 +8,58 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
 from .io_utf8 import force_stdio_utf8
+
+
+def _isolate_cuda_dlls() -> None:
+    """
+    システムの CUDA パスを PATH から除外し、同梱 cuda_dlls だけを使う。
+    ctranslate2 の import より先に呼ぶ必要がある。
+    """
+    # cuda_dlls フォルダを特定（このファイルの2階層上 / python / cuda_dlls）
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here.parent / "python" / "cuda_dlls",
+        here.parent.parent / "python" / "cuda_dlls",
+    ]
+    cuda_dlls_dir: Path | None = None
+    for c in candidates:
+        if c.is_dir():
+            cuda_dlls_dir = c
+            break
+
+    # PATH からシステム CUDA エントリを除去
+    _cuda_keywords = ("cuda", "cudnn", "cublas", "nvvp", "nvcuda", "tensorrt")
+    original_paths = os.environ.get("PATH", "").split(os.pathsep)
+    filtered = []
+    removed = []
+    for p in original_paths:
+        pl = p.lower()
+        if cuda_dlls_dir and Path(p).resolve() == cuda_dlls_dir.resolve():
+            filtered.append(p)  # 同梱 cuda_dlls は残す
+        elif any(k in pl for k in _cuda_keywords):
+            removed.append(p)
+        else:
+            filtered.append(p)
+    os.environ["PATH"] = os.pathsep.join(filtered)
+    if removed:
+        print(f"[server] Removed system CUDA paths from PATH ({len(removed)} entries):", flush=True)
+        for r in removed:
+            print(f"[server]   - {r}", flush=True)
+
+    # os.add_dll_directory で同梱 cuda_dlls を優先ロード
+    if cuda_dlls_dir and cuda_dlls_dir.is_dir():
+        os.add_dll_directory(str(cuda_dlls_dir))
+        print(f"[server] add_dll_directory: {cuda_dlls_dir}", flush=True)
+
+
+_isolate_cuda_dlls()
 
 
 def _make_result(ok: bool, text: str = "", duration: float = 0.0, error: str = "") -> dict[str, Any]:

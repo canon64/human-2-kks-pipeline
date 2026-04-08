@@ -74,17 +74,19 @@ return JSON.stringify(report);
 
 def _latest_response_text(driver, selectors: Sequence[str], logger: logging.Logger | None = None) -> str:
     """最後の応答要素のみを取得する（複数セレクタフォールバック付き・診断ログ付き）。"""
+    actual_selectors = list(selectors) if selectors else list(_FALLBACK_SELECTORS)
+
     if not logger:
         # 軽量パス: 1回のJS実行で最初にヒットしたテキストだけ返す
         try:
-            text = driver.execute_script(_FAST_JS, _FALLBACK_SELECTORS)
+            text = driver.execute_script(_FAST_JS, actual_selectors)
             return (text or "").strip()
         except Exception:
             return ""
 
     # 診断パス: 全セレクタの詳細をログ出力
     try:
-        result = driver.execute_script(_DIAG_JS, _FALLBACK_SELECTORS)
+        result = driver.execute_script(_DIAG_JS, actual_selectors)
         import json as _json
         report = _json.loads(result) if isinstance(result, str) else []
         for entry in report:
@@ -415,7 +417,10 @@ def send_text(driver, config: BridgeConfig, text: str, logger: logging.Logger) -
             raise RuntimeError(f"Failed to set input text. {reason}")
         _click_send_button(driver, config, logger)
 
+    t_send = time.time()
+    logger.info("[timing] wait_after_send start (%.1fs)", config.wait_after_send_seconds)
     time.sleep(config.wait_after_send_seconds)
+    logger.info("[timing] wait_after_send done (+%.2fs)", time.time() - t_send)
     return baseline, False
 
 
@@ -426,39 +431,49 @@ def _wait_stop_button_mode(
     baseline_text: str,
 ) -> str:
     """停止ボタンの出現→消滅を監視して完了を検出する（従来方式）。"""
-    deadline = time.time() + config.response_timeout_seconds
+    t0 = time.time()
+    deadline = t0 + config.response_timeout_seconds
     selectors = config.selectors.response_blocks
 
+    logger.info("[timing] phase0: initial sleep 0.3s")
     time.sleep(0.3)
+    logger.info("[timing] phase0 done (+%.2fs)", time.time() - t0)
 
-    # Phase 1: 停止ボタンが出現するまで待つ（最大15秒）
+    # Phase 1: 停止ボタンが出現するまで待つ（最大5秒、高頻度ポーリング）
     stop_appeared = False
-    stop_wait_deadline = time.time() + 15.0
-    while time.time() < stop_wait_deadline:
+    phase1_deadline = time.time() + 1.0
+    t_phase1 = time.time()
+    logger.info("[timing] phase1: waiting for stop_button (max 1s)")
+    while time.time() < phase1_deadline:
         if _is_stop_button_present(driver, config):
             stop_appeared = True
-            logger.info("stop_button_appeared")
+            logger.info("[timing] phase1: stop_button_appeared (+%.2fs)", time.time() - t0)
             break
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     if not stop_appeared:
-        logger.warning("stop_button_never_appeared, checking for instant response")
-        text = _latest_response_text(driver, selectors, logger)
-        if text and text != baseline_text:
-            logger.info("instant_response len=%d", len(text))
-            return text
-        else:
-            logger.warning("instant_check: text_len=%d baseline_match=%s", len(text), text == baseline_text)
+        logger.warning("[timing] phase1: stop_button_never_appeared (waited %.2fs)", time.time() - t_phase1)
 
-    # Phase 2: 停止ボタンが消えるまで待つ
+    # Phase 2: stopボタンが消えるまで待つ OR stopを見逃した場合はテキスト変化を直接待つ
     poll_count = 0
+    t_phase2 = time.time()
+    logger.info("[timing] phase2: waiting for response (stop_appeared=%s)", stop_appeared)
     while time.time() < deadline:
-        if not _is_stop_button_present(driver, config):
-            # 最初の数回と10回ごとに詳細ログ
-            use_detail = poll_count < 3 or poll_count % 10 == 0
-            text = _latest_response_text(driver, selectors, logger if use_detail else None)
+        if stop_appeared:
+            # stopボタンが消えたらテキスト取得
+            if not _is_stop_button_present(driver, config):
+                text = _latest_response_text(driver, selectors, logger if poll_count < 3 else None)
+                if text:
+                    logger.info("[timing] phase2: response_complete len=%d poll=%d (+%.2fs total)", len(text), poll_count, time.time() - t0)
+                    return text
+            else:
+                if poll_count < 5 or poll_count % 10 == 0:
+                    logger.info("[timing] phase2: stop_button still present poll=%d (+%.2fs)", poll_count, time.time() - t_phase2)
+        else:
+            # stopを見逃した場合はテキスト変化を直接ポーリング
+            text = _latest_response_text(driver, selectors, logger if poll_count < 3 else None)
             if text and text != baseline_text:
-                logger.info("response_complete len=%d poll_count=%d", len(text), poll_count)
+                logger.info("[timing] phase2: text_changed len=%d poll=%d (+%.2fs total)", len(text), poll_count, time.time() - t0)
                 return text
         poll_count += 1
         time.sleep(config.response_poll_seconds)
@@ -539,5 +554,7 @@ def wait_for_response(
 
     if mode == "text_stable":
         return _wait_text_stable_mode(driver, config, logger, baseline_text)
+    elif mode == "voice_button":
+        return _wait_stop_button_mode(driver, config, logger, baseline_text)
     else:
         return _wait_stop_button_mode(driver, config, logger, baseline_text)

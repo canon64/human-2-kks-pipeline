@@ -184,17 +184,22 @@ class MainWindow(QMainWindow):
     # ---- UI構築 ----
 
     def _build_ui(self) -> None:
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        root = QWidget()
-        scroll.setWidget(root)
-        self.setCentralWidget(scroll)
-        layout = QVBoxLayout(root)
+        from PyQt6.QtWidgets import QSplitter
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        root_layout.setSpacing(4)
+
+        # タブとログをスプリッターで上下分割
+        from PyQt6.QtWidgets import QSplitter
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        root_layout.addWidget(splitter, 1)
 
         self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
+        self.tabs.setMinimumSize(0, 0)
+        splitter.addWidget(self.tabs)
         self._build_recorder_tab()
         self._build_pipeline_tab()
         self._build_test_tab()
@@ -203,7 +208,13 @@ class MainWindow(QMainWindow):
         self._build_filter_tab()
         self._build_conversion_tab()
 
-        # コントロールボタン
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(40)
+        splitter.addWidget(self.log_text)
+        splitter.setSizes([520, 160])
+
+        # コントロールボタン（常に表示）
         ctrl = QHBoxLayout()
         self.start_btn = QPushButton("▶ 開始")
         self.start_btn.setFixedHeight(44)
@@ -214,9 +225,9 @@ class MainWindow(QMainWindow):
         self.pause_btn.clicked.connect(self._on_pause_resume)
         ctrl.addWidget(self.start_btn, 2)
         ctrl.addWidget(self.pause_btn, 1)
-        layout.addLayout(ctrl)
+        root_layout.addLayout(ctrl)
 
-        # モデルプリセット クイックボタン
+        # モデルプリセット クイックボタン（常に表示）
         preset_btn_layout = QHBoxLayout()
         self._preset_btns: list[QPushButton] = []
         for i in range(4):
@@ -227,9 +238,9 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _, n=idx: self._apply_preset(n))
             preset_btn_layout.addWidget(btn)
             self._preset_btns.append(btn)
-        layout.addLayout(preset_btn_layout)
+        root_layout.addLayout(preset_btn_layout)
 
-        # 手動テキスト送信
+        # 手動テキスト送信（常に表示）
         manual_group = QGroupBox("手動テキスト送信")
         manual_layout = QHBoxLayout(manual_group)
         self.manual_combo = _NoWheelComboBox()
@@ -241,18 +252,16 @@ class MainWindow(QMainWindow):
         self.manual_btn.clicked.connect(self._send_manual)
         manual_layout.addWidget(self.manual_combo, 1)
         manual_layout.addWidget(self.manual_btn)
-        layout.addWidget(manual_group)
-
-        # ログ
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(200)
-        layout.addWidget(self.log_text, 3)
+        root_layout.addWidget(manual_group)
 
     def _build_recorder_tab(self) -> None:
-        tab = QWidget()
-        self.tabs.addTab(tab, "録音設定")
-        form = QFormLayout(tab)
+        inner = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "録音設定")
+        form = QFormLayout(inner)
 
         device_row = QHBoxLayout()
         self.device_combo = _NoWheelAlwaysComboBox()
@@ -499,7 +508,9 @@ class MainWindow(QMainWindow):
 
     def _build_test_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "テスト")
+        scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "テスト")
         layout = QVBoxLayout(tab)
 
         fw_group = QGroupBox("FasterWhisper テスト")
@@ -1111,7 +1122,9 @@ class MainWindow(QMainWindow):
 
     def _build_conversion_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "変換辞書")
+        scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "変換辞書")
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("TTS前に適用するテキスト変換（上から順に適用）:"))
 
@@ -1169,7 +1182,9 @@ class MainWindow(QMainWindow):
 
     def _build_transcribe_conversion_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "文字起こし変換")
+        scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "文字起こし変換")
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("FasterWhisper結果に適用するテキスト変換（Grok送信用/表示用を分離）:"))
 
@@ -1226,7 +1241,9 @@ class MainWindow(QMainWindow):
 
     def _build_selenium_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "Selenium")
+        scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "Selenium")
         layout = QVBoxLayout(tab)
 
         # プロファイル選択
@@ -1411,7 +1428,9 @@ class MainWindow(QMainWindow):
 
     def _build_filter_tab(self) -> None:
         tab = QWidget()
-        self.tabs.addTab(tab, "フィルター")
+        scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tabs.addTab(scroll, "フィルター")
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("除外するフレーズ（1行1フレーズ、部分一致で除外）:"))
         self.filter_edit = QPlainTextEdit()

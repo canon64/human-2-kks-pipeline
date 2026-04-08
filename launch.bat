@@ -24,6 +24,12 @@ if not exist "python\python.exe" (
     )
 )
 
+if not exist "python\cuda_dlls\cublas64_11.dll" (
+    echo CUDA DLLs not found. Running setup...
+    echo.
+    call "%~dp0setup.bat" --no-pause
+)
+
 "python\python.exe" "%~dp0main.py" %*
 set "_RC=%ERRORLEVEL%"
 

@@ -66,7 +66,7 @@ def runtime_base_dir() -> str:
         return os.path.abspath(env_home)
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def resolve_config_path(base_dir: str, config_path_arg: str | None) -> str:
