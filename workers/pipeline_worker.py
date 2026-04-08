@@ -1076,10 +1076,6 @@ class PipelineWorker(QObject):
             p_cmd.extend(["--sbv2-server-url", self._cfg.sbv2_server_url])
         if combined_conv:
             p_cmd.extend(["--conversion-json", json.dumps(combined_conv, ensure_ascii=False)])
-        if self._cfg.grok_detection_mode and self._cfg.grok_detection_mode != "stop_button":
-            p_cmd.extend(["--detection-mode", self._cfg.grok_detection_mode])
-            if self._cfg.grok_text_stable_seconds > 0:
-                p_cmd.extend(["--text-stable-seconds", str(self._cfg.grok_text_stable_seconds)])
         # event-senderは同梱スクリプトを明示指定
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         if sender_ps1.exists():

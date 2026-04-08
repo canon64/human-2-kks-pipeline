@@ -66,6 +66,5 @@ class AppConfig:
     filter_phrases: list[str] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)
     conversion_dict: list[dict] = field(default_factory=list)
-    grok_detection_mode: str = "stop_button"
-    grok_text_stable_seconds: float = 1.5
+
 

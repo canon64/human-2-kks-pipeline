@@ -16,7 +16,6 @@ JP_SEND = "\u9001\u4fe1"
 JP_STOP = "\u505c\u6b62"
 JP_STOP_RESPONSE = "\u5fdc\u7b54\u3092\u505c\u6b62"
 JP_STOP_MODEL_RESPONSE = "\u30e2\u30c7\u30eb\u306e\u5fdc\u7b54\u3092\u505c\u6b62"
-JP_VOICE_MODE = "\u97f3\u58f0\u30e2\u30fc\u30c9\u306b\u3059\u308b"
 SEND_READY_SELECTORS = [
     'button[aria-label*="\\u9001\\u4fe1"]',
     'button[aria-label*="send"]',
@@ -264,41 +263,6 @@ def _is_stop_button_present(driver, config: BridgeConfig) -> bool:
         return False
 
 
-def _is_idle_voice_mode_button_present(driver) -> bool:
-    selectors = [
-        'button[aria-label*="\\u97f3\\u58f0\\u30e2\\u30fc\\u30c9\\u306b\\u3059\\u308b"]',
-        'button[aria-label*="voice mode"]',
-        'button[aria-label*="Voice mode"]',
-    ]
-    for selector in selectors:
-        try:
-            elements = driver.find_elements(By.CSS_SELECTOR, selector)
-        except Exception:
-            continue
-        for element in elements:
-            try:
-                if element.is_displayed():
-                    return True
-            except Exception:
-                continue
-
-    try:
-        has_voice_mode = driver.execute_script(
-            """
-            const buttons = Array.from(document.querySelectorAll('button'));
-            return buttons.some(b => {
-              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-              if (aria.includes('\\u97f3\\u58f0\\u30e2\\u30fc\\u30c9\\u306b\\u3059\\u308b')) return true;
-              if (aria.includes('voice mode')) return true;
-              return false;
-            });
-            """
-        )
-        return bool(has_voice_mode)
-    except Exception:
-        return False
-
-
 def _click_send_button(driver, config: BridgeConfig, logger: logging.Logger) -> None:
     for selector in config.selectors.send_buttons:
         try:
@@ -487,60 +451,6 @@ def _wait_stop_button_mode(
     raise TimeoutError("Timed out while waiting for Grok response.")
 
 
-def _wait_text_stable_mode(
-    driver,
-    config: BridgeConfig,
-    logger: logging.Logger,
-    baseline_text: str,
-) -> str:
-    """テキスト変化の安定を監視して完了を検出する（汎用方式）。"""
-    deadline = time.time() + config.response_timeout_seconds
-    selectors = config.selectors.response_blocks
-    stable_threshold = config.text_stable_seconds
-    poll_interval = 0.3
-
-    time.sleep(0.3)
-
-    last_text = ""
-    last_change_time = time.time()
-    response_started = False
-
-    poll_count = 0
-    while time.time() < deadline:
-        # 最初の3回と10回ごとに詳細ログ
-        use_detail = poll_count < 3 or poll_count % 10 == 0
-        text = _latest_response_text(driver, selectors, logger if use_detail else None)
-
-        if text and text != baseline_text:
-            if not response_started:
-                logger.info("text_stable: response_started len=%d poll=%d", len(text), poll_count)
-                response_started = True
-
-            if text != last_text:
-                last_text = text
-                last_change_time = time.time()
-                logger.info("text_stable: text_changed len=%d poll=%d", len(text), poll_count)
-            elif response_started and (time.time() - last_change_time) >= stable_threshold:
-                logger.info("text_stable: stable_complete len=%d (%.1fs stable) poll=%d",
-                            len(text), time.time() - last_change_time, poll_count)
-                return text
-        elif use_detail and poll_count > 0:
-            logger.debug("text_stable: no_change text_len=%d baseline_match=%s poll=%d",
-                         len(text), text == baseline_text, poll_count)
-
-        poll_count += 1
-        time.sleep(poll_interval)
-
-    # タイムアウト: 最終診断ログ
-    logger.warning("text_stable: timeout_reached poll_count=%d, final probe:", poll_count)
-    _latest_response_text(driver, selectors, logger)
-    if last_text and last_text != baseline_text:
-        logger.warning("text_stable: timeout_return_last len=%d", len(last_text))
-        return last_text
-    logger.error("text_stable: all_selectors_failed after %d polls", poll_count)
-    raise TimeoutError("Timed out while waiting for Grok response.")
-
-
 def wait_for_response(
     driver,
     config: BridgeConfig,
@@ -548,13 +458,6 @@ def wait_for_response(
     baseline_text: str,
     stop_before: bool,
 ) -> str:
-    """設定に応じた方式でGrok応答を待機する。"""
-    mode = config.response_detection_mode
-    logger.info("wait_for_response mode=%s timeout=%.0fs", mode, config.response_timeout_seconds)
-
-    if mode == "text_stable":
-        return _wait_text_stable_mode(driver, config, logger, baseline_text)
-    elif mode == "voice_button":
-        return _wait_stop_button_mode(driver, config, logger, baseline_text)
-    else:
-        return _wait_stop_button_mode(driver, config, logger, baseline_text)
+    """Grok応答を待機する。"""
+    logger.info("wait_for_response timeout=%.0fs", config.response_timeout_seconds)
+    return _wait_stop_button_mode(driver, config, logger, baseline_text)
