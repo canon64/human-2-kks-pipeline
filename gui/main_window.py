@@ -663,6 +663,10 @@ class MainWindow(QMainWindow):
             action_btn.setMaximumWidth(84)
             action_btn.clicked.connect(action_callback)
             header.addWidget(action_btn)
+        else:
+            spacer_btn = QLabel("")
+            spacer_btn.setFixedHeight(QPushButton().sizeHint().height())
+            header.addWidget(spacer_btn)
         header.addStretch()
         panel_layout.addLayout(header)
         edit = QPlainTextEdit()
