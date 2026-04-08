@@ -20,7 +20,14 @@ def _read_transcribe_server_port(config_file: Path) -> int:
 
 
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
-    filter_phrases = [l for l in window.filter_edit.toPlainText().splitlines() if l.strip()]
+    filter_phrases = []
+    for row in range(window.filter_table.rowCount()):
+        item = window.filter_table.item(row, 0)
+        combo = window.filter_table.cellWidget(row, 1)
+        pattern = (item.text() if item else "").strip()
+        ftype = combo.currentText() if combo else "partial"
+        if pattern:
+            filter_phrases.append({"pattern": pattern, "type": ftype})
     transcribe_conversion_dict = []
     for row in range(window.transcribe_conversion_table.rowCount()):
         from_item = window.transcribe_conversion_table.item(row, 0)
@@ -294,7 +301,14 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
                     break
         phrases = data.get("filter_phrases", [])
         if phrases:
-            window.filter_edit.setPlainText("\n".join(phrases))
+            window.filter_table.setRowCount(0)
+            for entry in phrases:
+                if isinstance(entry, str):
+                    entry = {"pattern": entry, "type": "partial"}
+                pattern = entry.get("pattern", "").strip()
+                ftype = entry.get("type", "partial")
+                if pattern:
+                    window._filter_add_row(pattern, ftype)
         stt_conv = data.get("transcribe_conversion_dict", [])
         window.transcribe_conversion_table.setRowCount(0)
         for entry in stt_conv:

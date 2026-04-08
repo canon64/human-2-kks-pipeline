@@ -502,7 +502,26 @@ class PipelineWorker(QObject):
 
     def _is_filtered(self, text: str) -> bool:
         lower = text.lower()
-        return any(p.strip() and p.strip().lower() in lower for p in self._cfg.filter_phrases)
+        for entry in self._cfg.filter_phrases:
+            if isinstance(entry, str):
+                entry = {"pattern": entry, "type": "partial"}
+            pattern = entry.get("pattern", "").strip()
+            ftype = entry.get("type", "partial")
+            if not pattern:
+                continue
+            if ftype == "exact":
+                if text.strip() == pattern:
+                    return True
+            elif ftype == "regex":
+                try:
+                    if re.search(pattern, text):
+                        return True
+                except re.error:
+                    pass
+            else:
+                if pattern.lower() in lower:
+                    return True
+        return False
 
     def _run_cmd(self, cmd: list[str], timeout_sec: float) -> subprocess.CompletedProcess:
         proc = subprocess.Popen(

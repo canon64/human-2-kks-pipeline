@@ -63,7 +63,7 @@ class AppConfig:
     video_metadata_path: Optional[Path] = None
     sbv2_server_url: str = "http://127.0.0.1:5000"
     sbv2_server_auto_start: bool = True
-    filter_phrases: list[str] = field(default_factory=list)
+    filter_phrases: list[dict] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)
     conversion_dict: list[dict] = field(default_factory=list)
 

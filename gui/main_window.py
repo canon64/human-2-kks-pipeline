@@ -1416,21 +1416,53 @@ class MainWindow(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.tabs.addTab(scroll, "フィルター")
         layout = QVBoxLayout(tab)
-        layout.addWidget(QLabel("除外するフレーズ（1行1フレーズ、部分一致で除外）:"))
-        self.filter_edit = QPlainTextEdit()
-        self.filter_edit.setPlainText(
-            "ありがとうございました\n"
-            "ご視聴ありがとうございました\n"
-            "チャンネル登録よろしくお願いします\n"
-            "高評価よろしくお願いします\n"
-            "字幕は自動生成されています\n"
-            "お疲れ様でした\n"
-            "視聴ありがとうございました\n"
-            "ご視聴ありがとう\n"
-            "MBC\n"
-            "NHK\n"
-        )
-        layout.addWidget(self.filter_edit, 1)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("行追加")
+        add_btn.clicked.connect(self._filter_add_row)
+        del_btn = QPushButton("選択行削除")
+        del_btn.clicked.connect(self._filter_del_row)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.filter_table = QTableWidget(0, 2)
+        self.filter_table.setHorizontalHeaderLabels(["パターン", "種別"])
+        self.filter_table.horizontalHeader().setStretchLastSection(False)
+        self.filter_table.horizontalHeader().setSectionResizeMode(0, self.filter_table.horizontalHeader().ResizeMode.Stretch)
+        self.filter_table.horizontalHeader().setSectionResizeMode(1, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
+        self.filter_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.filter_table, 1)
+
+        defaults = [
+            ("ありがとうございました", "partial"),
+            ("ご視聴ありがとうございました", "partial"),
+            ("チャンネル登録よろしくお願いします", "partial"),
+            ("高評価よろしくお願いします", "partial"),
+            ("字幕は自動生成されています", "partial"),
+            ("お疲れ様でした", "partial"),
+            ("視聴ありがとうございました", "partial"),
+            ("ご視聴ありがとう", "partial"),
+            ("MBC", "partial"),
+            ("NHK", "partial"),
+        ]
+        for pattern, ftype in defaults:
+            self._filter_add_row(pattern, ftype)
+
+    def _filter_add_row(self, pattern: str = "", ftype: str = "partial") -> None:
+        row = self.filter_table.rowCount()
+        self.filter_table.insertRow(row)
+        self.filter_table.setItem(row, 0, QTableWidgetItem(pattern))
+        combo = _NoWheelComboBox()
+        combo.addItems(["partial", "exact", "regex"])
+        combo.setCurrentText(ftype)
+        self.filter_table.setCellWidget(row, 1, combo)
+
+    def _filter_del_row(self) -> None:
+        rows = sorted({idx.row() for idx in self.filter_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.filter_table.removeRow(row)
 
     # ---- ヘルパー ----
 
