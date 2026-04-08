@@ -672,6 +672,7 @@ class MainWindow(QMainWindow):
         edit = QPlainTextEdit()
         edit.setReadOnly(True)
         edit.setPlaceholderText(placeholder)
+        edit.setMinimumHeight(edit.minimumSizeHint().height() + 22)
         panel_layout.addWidget(edit, 1)
         return panel, edit
 
