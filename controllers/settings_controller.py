@@ -25,7 +25,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         item = window.filter_table.item(row, 0)
         combo = window.filter_table.cellWidget(row, 1)
         pattern = (item.text() if item else "").strip()
-        ftype = combo.currentText() if combo else "partial"
+        ftype = (combo.currentData() or "partial") if combo else "partial"
         if pattern:
             filter_phrases.append({"pattern": pattern, "type": ftype})
     transcribe_conversion_dict = []
