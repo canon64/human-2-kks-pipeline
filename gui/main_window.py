@@ -1770,6 +1770,21 @@ class MainWindow(QMainWindow):
                             transcribe_table.setCurrentCell(row + 1, 0)
                             transcribe_table.editItem(next_item)
                     return True
+        filter_table = getattr(self, "filter_table", None)
+        if filter_table is not None and obj is filter_table and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Tab and not (
+                event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+            ):
+                row = filter_table.currentRow()
+                if row >= 0:
+                    if row == filter_table.rowCount() - 1:
+                        self._filter_add_row()
+                    else:
+                        next_item = filter_table.item(row + 1, 0)
+                        if next_item is not None:
+                            filter_table.setCurrentCell(row + 1, 0)
+                            filter_table.editItem(next_item)
+                    return True
         return super().eventFilter(obj, event)
 
     @staticmethod
