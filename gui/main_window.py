@@ -84,6 +84,10 @@ CONFIG_FILE = PROJECT_ROOT / "config.json"
 class _ConversionTableDelegate(QStyledItemDelegate):
     request_new_row = pyqtSignal()
 
+    def __init__(self, parent=None, last_editable_col: int = -1):
+        super().__init__(parent)
+        self._last_editable_col = last_editable_col  # -1 = 自動（columnCount-1）
+
     def eventFilter(self, editor, event):
         if event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Tab and not (
@@ -95,7 +99,7 @@ class _ConversionTableDelegate(QStyledItemDelegate):
                     col = table.currentColumn()
                     if row < 0 or col < 0:
                         return super().eventFilter(editor, event)
-                    last_col = max(0, table.columnCount() - 1)
+                    last_col = self._last_editable_col if self._last_editable_col >= 0 else max(0, table.columnCount() - 1)
                     if col == last_col:
                         self.commitData.emit(editor)
                         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
@@ -1433,6 +1437,10 @@ class MainWindow(QMainWindow):
         self.filter_table.horizontalHeader().setSectionResizeMode(0, self.filter_table.horizontalHeader().ResizeMode.Stretch)
         self.filter_table.horizontalHeader().setSectionResizeMode(1, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
         self.filter_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._filter_table_delegate = _ConversionTableDelegate(self.filter_table, last_editable_col=0)
+        self._filter_table_delegate.request_new_row.connect(lambda: self._filter_add_row())
+        self.filter_table.setItemDelegate(self._filter_table_delegate)
+        self.filter_table.installEventFilter(self)
         layout.addWidget(self.filter_table, 1)
 
         defaults = [
@@ -1451,6 +1459,7 @@ class MainWindow(QMainWindow):
             self._filter_add_row(pattern, ftype)
 
     def _filter_add_row(self, pattern: str = "", ftype: str = "partial") -> None:
+        self.filter_table.blockSignals(True)
         row = self.filter_table.rowCount()
         self.filter_table.insertRow(row)
         self.filter_table.setItem(row, 0, QTableWidgetItem(pattern))
@@ -1458,6 +1467,11 @@ class MainWindow(QMainWindow):
         combo.addItems(["partial", "exact", "regex"])
         combo.setCurrentText(ftype)
         self.filter_table.setCellWidget(row, 1, combo)
+        self.filter_table.blockSignals(False)
+        self.filter_table.setCurrentCell(row, 0)
+        self.filter_table.scrollToItem(self.filter_table.item(row, 0))
+        if not pattern:
+            self.filter_table.editItem(self.filter_table.item(row, 0))
 
     def _filter_del_row(self) -> None:
         rows = sorted({idx.row() for idx in self.filter_table.selectedIndexes()}, reverse=True)
