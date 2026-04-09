@@ -1271,7 +1271,7 @@ class MainWindow(QMainWindow):
         self.conversion_table.setColumnWidth(4, 110)
         self.conversion_table.setColumnHidden(5, True)
         self.conversion_table.setSortingEnabled(True)
-        self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table, last_editable_col=3)
+        self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table, last_editable_col=4)
         self._conversion_table_delegate.request_new_row.connect(self._conv_add_row)
         self.conversion_table.setItemDelegate(self._conversion_table_delegate)
         self.conversion_table.installEventFilter(self)
@@ -1345,7 +1345,7 @@ class MainWindow(QMainWindow):
         from_text: str = "",
         to_sbv2: str = "",
         to_display: str = "",
-        display_apply: bool = False,
+        display_apply: bool = True,
         enabled: bool = True,
         order_index: Optional[int] = None,
         *,
@@ -1376,6 +1376,11 @@ class MainWindow(QMainWindow):
         table.blockSignals(False)
         if sorting_enabled:
             table.setSortingEnabled(True)
+        if start_edit:
+            idx = self.conversion_sort_combo.findData(0)
+            if idx >= 0:
+                self.conversion_sort_combo.setCurrentIndex(idx)
+            self._sort_conversion_table(Qt.SortOrder.AscendingOrder)
         needs_search_clear = bool(start_edit and self.conversion_search_edit.text().strip())
         if needs_search_clear:
             self.conversion_search_edit.clear()
@@ -1457,7 +1462,7 @@ class MainWindow(QMainWindow):
         self.transcribe_conversion_table.setColumnWidth(4, 110)
         self.transcribe_conversion_table.setColumnHidden(5, True)
         self.transcribe_conversion_table.setSortingEnabled(True)
-        self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table, last_editable_col=3)
+        self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table, last_editable_col=4)
         self._transcribe_conversion_table_delegate.request_new_row.connect(self._transcribe_conv_add_row)
         self.transcribe_conversion_table.setItemDelegate(self._transcribe_conversion_table_delegate)
         self.transcribe_conversion_table.itemChanged.connect(self._on_transcribe_conv_item_changed)
@@ -1531,6 +1536,11 @@ class MainWindow(QMainWindow):
         table.blockSignals(False)
         if sorting_enabled:
             table.setSortingEnabled(True)
+        if start_edit:
+            idx = self.transcribe_conversion_sort_combo.findData(0)
+            if idx >= 0:
+                self.transcribe_conversion_sort_combo.setCurrentIndex(idx)
+            self._sort_transcribe_conversion_table(Qt.SortOrder.AscendingOrder)
         needs_search_clear = bool(start_edit and self.transcribe_conversion_search_edit.text().strip())
         if needs_search_clear:
             self.transcribe_conversion_search_edit.clear()
@@ -2190,7 +2200,7 @@ class MainWindow(QMainWindow):
             ):
                 row = conversion_table.currentRow()
                 col = conversion_table.currentColumn()
-                last_col = 3
+                last_col = 4
                 if row >= 0 and col == last_col:
                     if row == conversion_table.rowCount() - 1:
                         self._conv_add_row()
@@ -2206,7 +2216,7 @@ class MainWindow(QMainWindow):
             ):
                 row = transcribe_table.currentRow()
                 col = transcribe_table.currentColumn()
-                last_col = 3
+                last_col = 4
                 if row >= 0 and col == last_col:
                     if row == transcribe_table.rowCount() - 1:
                         self._transcribe_conv_add_row()
