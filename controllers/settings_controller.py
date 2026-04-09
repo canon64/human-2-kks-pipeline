@@ -72,10 +72,18 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
     for row in range(window.filter_table.rowCount()):
         enabled_item = window.filter_table.item(row, 0)
         pattern_item = window.filter_table.item(row, 1)
-        combo = window.filter_table.cellWidget(row, 2)
+        type_item = window.filter_table.item(row, 2)
         enabled = bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked)
         pattern = (pattern_item.text() if pattern_item else "").strip()
-        ftype = (combo.currentData() or "partial") if combo else "partial"
+        ftype = "partial"
+        if type_item is not None:
+            raw_type = type_item.data(Qt.ItemDataRole.UserRole)
+            if raw_type in ("partial", "exact", "regex"):
+                ftype = str(raw_type)
+            else:
+                label = (type_item.text() or "").strip()
+                label_to_type = {"部分一致": "partial", "完全一致": "exact", "正規表現": "regex"}
+                ftype = label_to_type.get(label, "partial")
         if pattern:
             filter_phrases.append({"enabled": enabled, "pattern": pattern, "type": ftype})
     transcribe_conversion_dict = []

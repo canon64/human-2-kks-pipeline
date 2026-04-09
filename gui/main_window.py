@@ -125,6 +125,42 @@ class _CheckStateSortItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class _FilterTypeDelegate(QStyledItemDelegate):
+    _choices = [
+        ("部分一致", "partial"),
+        ("完全一致", "exact"),
+        ("正規表現", "regex"),
+    ]
+
+    def createEditor(self, parent, option, index):
+        combo = _NoWheelComboBox(parent)
+        for label, value in self._choices:
+            combo.addItem(label, value)
+        return combo
+
+    def setEditorData(self, editor, index):
+        if not isinstance(editor, QComboBox):
+            return
+        data = index.data(Qt.ItemDataRole.UserRole)
+        if data is None:
+            text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            data = "partial"
+            for label, value in self._choices:
+                if text == label:
+                    data = value
+                    break
+        idx = editor.findData(data)
+        editor.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def setModelData(self, editor, model, index):
+        if not isinstance(editor, QComboBox):
+            return
+        label = editor.currentText()
+        value = editor.currentData()
+        model.setData(index, label, Qt.ItemDataRole.DisplayRole)
+        model.setData(index, value, Qt.ItemDataRole.UserRole)
+
+
 # ワーカー: パイプライン（WAV監視 → 文字起こし → フィルター → Grok → SBV2 → KKS）
 # ---------------------------------------------------------------------------
 
@@ -1196,11 +1232,15 @@ class MainWindow(QMainWindow):
 
         self.conversion_table = QTableWidget(0, 6)
         self.conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "SBV2送信用", "表示用", "表示適用", "登録順"])
-        self.conversion_table.horizontalHeader().setStretchLastSection(True)
+        conv_header = self.conversion_table.horizontalHeader()
+        conv_header.setStretchLastSection(False)
+        conv_header.setSectionResizeMode(0, conv_header.ResizeMode.ResizeToContents)
+        conv_header.setSectionResizeMode(1, conv_header.ResizeMode.Stretch)
+        conv_header.setSectionResizeMode(2, conv_header.ResizeMode.Stretch)
+        conv_header.setSectionResizeMode(3, conv_header.ResizeMode.Stretch)
+        conv_header.setSectionResizeMode(4, conv_header.ResizeMode.ResizeToContents)
+        conv_header.setSectionResizeMode(5, conv_header.ResizeMode.Fixed)
         self.conversion_table.setColumnWidth(0, 62)
-        self.conversion_table.setColumnWidth(1, 220)
-        self.conversion_table.setColumnWidth(2, 220)
-        self.conversion_table.setColumnWidth(3, 220)
         self.conversion_table.setColumnWidth(4, 110)
         self.conversion_table.setColumnHidden(5, True)
         self.conversion_table.setSortingEnabled(True)
@@ -1266,8 +1306,7 @@ class MainWindow(QMainWindow):
         to_sbv2_item = QTableWidgetItem(to_sbv2)
         to_display_item = QTableWidgetItem(to_display)
         display_item = self._new_display_apply_item(display_apply)
-        order_item = QTableWidgetItem("")
-        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item = QTableWidgetItem(f"{order_value:08d}")
         order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(row, 0, enabled_item)
         table.setItem(row, 1, from_item)
@@ -1343,11 +1382,15 @@ class MainWindow(QMainWindow):
 
         self.transcribe_conversion_table = QTableWidget(0, 6)
         self.transcribe_conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "Grok送信用", "表示用", "表示適用", "登録順"])
-        self.transcribe_conversion_table.horizontalHeader().setStretchLastSection(True)
+        trans_header = self.transcribe_conversion_table.horizontalHeader()
+        trans_header.setStretchLastSection(False)
+        trans_header.setSectionResizeMode(0, trans_header.ResizeMode.ResizeToContents)
+        trans_header.setSectionResizeMode(1, trans_header.ResizeMode.Stretch)
+        trans_header.setSectionResizeMode(2, trans_header.ResizeMode.Stretch)
+        trans_header.setSectionResizeMode(3, trans_header.ResizeMode.Stretch)
+        trans_header.setSectionResizeMode(4, trans_header.ResizeMode.ResizeToContents)
+        trans_header.setSectionResizeMode(5, trans_header.ResizeMode.Fixed)
         self.transcribe_conversion_table.setColumnWidth(0, 62)
-        self.transcribe_conversion_table.setColumnWidth(1, 220)
-        self.transcribe_conversion_table.setColumnWidth(2, 220)
-        self.transcribe_conversion_table.setColumnWidth(3, 220)
         self.transcribe_conversion_table.setColumnWidth(4, 110)
         self.transcribe_conversion_table.setColumnHidden(5, True)
         self.transcribe_conversion_table.setSortingEnabled(True)
@@ -1414,8 +1457,7 @@ class MainWindow(QMainWindow):
         to_grok_item = QTableWidgetItem(to_grok)
         to_display_item = QTableWidgetItem(to_display)
         display_item = self._new_display_apply_item(display_apply)
-        order_item = QTableWidgetItem("")
-        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item = QTableWidgetItem(f"{order_value:08d}")
         order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(row, 0, enabled_item)
         table.setItem(row, 1, from_item)
@@ -1672,6 +1714,8 @@ class MainWindow(QMainWindow):
         self._filter_table_delegate = _ConversionTableDelegate(self.filter_table, last_editable_col=1)
         self._filter_table_delegate.request_new_row.connect(lambda: self._filter_add_row())
         self.filter_table.setItemDelegate(self._filter_table_delegate)
+        self._filter_type_delegate = _FilterTypeDelegate(self.filter_table)
+        self.filter_table.setItemDelegateForColumn(2, self._filter_type_delegate)
         self.filter_table.installEventFilter(self)
         layout.addWidget(self.filter_table, 1)
 
@@ -1690,13 +1734,6 @@ class MainWindow(QMainWindow):
         for pattern, ftype in defaults:
             self._filter_add_row(pattern, ftype, start_edit=False, notify=False)
 
-    @staticmethod
-    def _find_cell_widget_row(table: QTableWidget, target: QWidget, column: int) -> int:
-        for row in range(table.rowCount()):
-            if table.cellWidget(row, column) is target:
-                return row
-        return -1
-
     def _sort_filter_table(self, order: Qt.SortOrder) -> None:
         col = int(self.filter_sort_combo.currentData())
         self.filter_table.sortItems(col, order)
@@ -1707,8 +1744,8 @@ class MainWindow(QMainWindow):
         tokens = [t for t in query.lower().split() if t]
         table = self.filter_table
         for row in range(table.rowCount()):
-            type_combo = table.cellWidget(row, 2)
-            type_text = type_combo.currentText() if isinstance(type_combo, QComboBox) else ""
+            type_item = table.item(row, 2)
+            type_text = type_item.text() if type_item else ""
             parts = [
                 "有効" if table.item(row, 0) and table.item(row, 0).checkState() == Qt.CheckState.Checked else "無効",
                 (table.item(row, 1).text() if table.item(row, 1) else ""),
@@ -1717,23 +1754,6 @@ class MainWindow(QMainWindow):
             haystack = " ".join(parts).lower()
             visible = all(token in haystack for token in tokens)
             table.setRowHidden(row, not visible)
-
-    def _on_filter_type_changed(self, _index: int) -> None:
-        combo = self.sender()
-        if not isinstance(combo, QComboBox):
-            return
-        row = self._find_cell_widget_row(self.filter_table, combo, 2)
-        if row < 0:
-            return
-        item = self.filter_table.item(row, 2)
-        if item is None:
-            item = QTableWidgetItem("")
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.filter_table.setItem(row, 2, item)
-        item.setText(combo.currentText())
-        item.setData(Qt.ItemDataRole.UserRole, combo.currentData())
-        self._apply_filter_table_search()
-        self._on_any_setting_changed()
 
     def _filter_add_row(
         self,
@@ -1755,24 +1775,16 @@ class MainWindow(QMainWindow):
         self._filter_order_seq = max(self._filter_order_seq, order_value + 1)
         enabled_item = self._new_enabled_item(enabled)
         pattern_item = QTableWidgetItem(pattern)
-        order_item = QTableWidgetItem("")
-        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item = QTableWidgetItem(f"{order_value:08d}")
         order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.filter_table.setItem(row, 0, enabled_item)
         self.filter_table.setItem(row, 1, pattern_item)
-        combo = _NoWheelComboBox()
-        combo.addItem("部分一致", "partial")
-        combo.addItem("完全一致", "exact")
-        combo.addItem("正規表現", "regex")
-        idx = combo.findData(ftype)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.currentIndexChanged.connect(self._on_filter_type_changed)
-        type_item = QTableWidgetItem(combo.currentText())
-        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        type_item.setData(Qt.ItemDataRole.UserRole, combo.currentData())
+        type_map = {"partial": "部分一致", "exact": "完全一致", "regex": "正規表現"}
+        type_value = ftype if ftype in type_map else "partial"
+        type_item = QTableWidgetItem(type_map.get(type_value, "部分一致"))
+        type_item.setData(Qt.ItemDataRole.UserRole, type_value)
         self.filter_table.setItem(row, 2, type_item)
         self.filter_table.setItem(row, 3, order_item)
-        self.filter_table.setCellWidget(row, 2, combo)
         self.filter_table.blockSignals(False)
         if sorting_enabled:
             self.filter_table.setSortingEnabled(True)
