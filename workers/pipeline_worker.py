@@ -87,6 +87,21 @@ class PipelineWorker(QObject):
         except Exception:
             return []
 
+    @staticmethod
+    def _entry_enabled(entry: dict, default: bool = True) -> bool:
+        value = entry.get("enabled", default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in ("", "0", "false", "off", "no"):
+                return False
+            if token in ("1", "true", "on", "yes"):
+                return True
+        return default
+
     def _build_kana_rules(self) -> list[tuple[str, str, int, str, str]]:
         # song_kana_map の title→index テーブル（play_count追跡用）
         title_to_idx: dict[str, int] = {}
@@ -505,6 +520,8 @@ class PipelineWorker(QObject):
         for entry in self._cfg.filter_phrases:
             if isinstance(entry, str):
                 entry = {"pattern": entry, "type": "partial"}
+            if not self._entry_enabled(entry, True):
+                continue
             pattern = entry.get("pattern", "").strip()
             ftype = entry.get("type", "partial")
             if not pattern:
@@ -838,6 +855,8 @@ class PipelineWorker(QObject):
         target = "display" if str(mode).strip().lower() == "display" else "grok"
         for row in rules:
             if not isinstance(row, dict):
+                continue
+            if not self._entry_enabled(row, True):
                 continue
             src = str(row.get("from", ""))
             if not src:

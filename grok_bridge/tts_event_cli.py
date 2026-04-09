@@ -55,6 +55,8 @@ def _apply_conversion_rules(
     for idx, entry in enumerate(rules):
         if not isinstance(entry, dict):
             continue
+        if not _parse_bool(entry.get("enabled", True)):
+            continue
         from_str = str(entry.get("from", ""))
         if not from_str:
             continue

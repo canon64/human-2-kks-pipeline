@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QTableWidgetItem
 
 from config.models import AppConfig
 
@@ -52,23 +51,41 @@ def _read_diagnostic_log_interval_ms(config_file: Path) -> int:
         return 1000
 
 
+def _as_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("", "0", "false", "off", "no"):
+            return False
+        if token in ("1", "true", "on", "yes"):
+            return True
+    return default
+
+
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
     diagnostic_log_enabled = _read_diagnostic_log_enabled(config_file)
     diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
     filter_phrases = []
     for row in range(window.filter_table.rowCount()):
-        item = window.filter_table.item(row, 0)
-        combo = window.filter_table.cellWidget(row, 1)
-        pattern = (item.text() if item else "").strip()
+        enabled_item = window.filter_table.item(row, 0)
+        pattern_item = window.filter_table.item(row, 1)
+        combo = window.filter_table.cellWidget(row, 2)
+        enabled = bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked)
+        pattern = (pattern_item.text() if pattern_item else "").strip()
         ftype = (combo.currentData() or "partial") if combo else "partial"
         if pattern:
-            filter_phrases.append({"pattern": pattern, "type": ftype})
+            filter_phrases.append({"enabled": enabled, "pattern": pattern, "type": ftype})
     transcribe_conversion_dict = []
     for row in range(window.transcribe_conversion_table.rowCount()):
-        from_item = window.transcribe_conversion_table.item(row, 0)
-        grok_to_item = window.transcribe_conversion_table.item(row, 1)
-        display_to_item = window.transcribe_conversion_table.item(row, 2)
-        display_item = window.transcribe_conversion_table.item(row, 3)
+        enabled_item = window.transcribe_conversion_table.item(row, 0)
+        from_item = window.transcribe_conversion_table.item(row, 1)
+        grok_to_item = window.transcribe_conversion_table.item(row, 2)
+        display_to_item = window.transcribe_conversion_table.item(row, 3)
+        display_item = window.transcribe_conversion_table.item(row, 4)
+        enabled = bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked)
         from_str = (from_item.text() if from_item else "").strip()
         grok_to = (grok_to_item.text() if grok_to_item else "").strip()
         display_to = (display_to_item.text() if display_to_item else "").strip()
@@ -76,6 +93,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
             display_apply = bool(display_item and display_item.checkState() == Qt.CheckState.Checked)
             transcribe_conversion_dict.append(
                 {
+                    "enabled": enabled,
                     "from": from_str,
                     "to_grok": grok_to,
                     "to_display": display_to,
@@ -84,10 +102,12 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
             )
     conversion_dict = []
     for row in range(window.conversion_table.rowCount()):
-        from_item = window.conversion_table.item(row, 0)
-        sbv2_to_item = window.conversion_table.item(row, 1)
-        display_to_item = window.conversion_table.item(row, 2)
-        display_item = window.conversion_table.item(row, 3)
+        enabled_item = window.conversion_table.item(row, 0)
+        from_item = window.conversion_table.item(row, 1)
+        sbv2_to_item = window.conversion_table.item(row, 2)
+        display_to_item = window.conversion_table.item(row, 3)
+        display_item = window.conversion_table.item(row, 4)
+        enabled = bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked)
         from_str = (from_item.text() if from_item else "").strip()
         to_sbv2 = (sbv2_to_item.text() if sbv2_to_item else "").strip()
         to_display = (display_to_item.text() if display_to_item else "").strip()
@@ -95,6 +115,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
             display_apply = bool(display_item and display_item.checkState() == Qt.CheckState.Checked)
             conversion_dict.append(
                 {
+                    "enabled": enabled,
                     "from": from_str,
                     "to_sbv2": to_sbv2,
                     "to_display": to_display,
@@ -343,33 +364,48 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
             window.filter_table.setRowCount(0)
             for entry in phrases:
                 if isinstance(entry, str):
-                    entry = {"pattern": entry, "type": "partial"}
+                    entry = {"enabled": True, "pattern": entry, "type": "partial"}
                 pattern = entry.get("pattern", "").strip()
                 ftype = entry.get("type", "partial")
+                enabled = _as_bool(entry.get("enabled", True), True)
                 if pattern:
-                    window._filter_add_row(pattern, ftype)
+                    window._filter_add_row(pattern, ftype, enabled, start_edit=False, notify=False)
         stt_conv = data.get("transcribe_conversion_dict", [])
         window.transcribe_conversion_table.setRowCount(0)
         for entry in stt_conv:
-            row = window.transcribe_conversion_table.rowCount()
-            window.transcribe_conversion_table.insertRow(row)
-            window.transcribe_conversion_table.setItem(row, 0, QTableWidgetItem(entry.get("from", "")))
+            from_text = str(entry.get("from", "")).strip()
+            if not from_text:
+                continue
             to_grok = str(entry.get("to_grok", entry.get("to", "")))
             to_display = str(entry.get("to_display", entry.get("to", "")))
-            window.transcribe_conversion_table.setItem(row, 1, QTableWidgetItem(to_grok))
-            window.transcribe_conversion_table.setItem(row, 2, QTableWidgetItem(to_display))
-            window.transcribe_conversion_table.setItem(row, 3, window._new_display_apply_item(bool(entry.get("display_apply", True))))
+            display_apply = _as_bool(entry.get("display_apply", True), True)
+            enabled = _as_bool(entry.get("enabled", True), True)
+            window._transcribe_conv_add_row(
+                from_text,
+                to_grok,
+                to_display,
+                display_apply,
+                enabled,
+                start_edit=False,
+            )
         conv = data.get("conversion_dict", [])
         window.conversion_table.setRowCount(0)
         for entry in conv:
-            row = window.conversion_table.rowCount()
-            window.conversion_table.insertRow(row)
-            window.conversion_table.setItem(row, 0, QTableWidgetItem(entry.get("from", "")))
+            from_text = str(entry.get("from", "")).strip()
+            if not from_text:
+                continue
             to_sbv2 = str(entry.get("to_sbv2", entry.get("to_grok", entry.get("to", ""))))
             to_display = str(entry.get("to_display", entry.get("to", "")))
-            window.conversion_table.setItem(row, 1, QTableWidgetItem(to_sbv2))
-            window.conversion_table.setItem(row, 2, QTableWidgetItem(to_display))
-            window.conversion_table.setItem(row, 3, window._new_display_apply_item(bool(entry.get("display_apply", False))))
+            display_apply = _as_bool(entry.get("display_apply", False), False)
+            enabled = _as_bool(entry.get("enabled", True), True)
+            window._conv_add_row(
+                from_text,
+                to_sbv2,
+                to_display,
+                display_apply,
+                enabled,
+                start_edit=False,
+            )
         window._model_presets = [p for p in data.get("model_presets", []) if isinstance(p, dict) and p.get("name")]
         window._refresh_preset_ui()
         history = data.get("manual_history", [])

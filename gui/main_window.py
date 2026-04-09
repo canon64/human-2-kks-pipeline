@@ -114,6 +114,17 @@ class _ConversionTableDelegate(QStyledItemDelegate):
         return super().eventFilter(editor, event)
 
 
+class _CheckStateSortItem(QTableWidgetItem):
+    """チェック状態で並び替え可能なテーブル項目。"""
+
+    def __lt__(self, other):
+        if isinstance(other, QTableWidgetItem):
+            self_value = 1 if self.checkState() == Qt.CheckState.Checked else 0
+            other_value = 1 if other.checkState() == Qt.CheckState.Checked else 0
+            return self_value < other_value
+        return super().__lt__(other)
+
+
 # ワーカー: パイプライン（WAV監視 → 文字起こし → フィルター → Grok → SBV2 → KKS）
 # ---------------------------------------------------------------------------
 
@@ -620,11 +631,27 @@ class MainWindow(QMainWindow):
         self.sbv2_test_volume_label.setText(f"{value}%")
 
     @staticmethod
+    def _parse_enabled_value(value: object, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in ("", "0", "false", "off", "no"):
+                return False
+            if token in ("1", "true", "on", "yes"):
+                return True
+        return default
+
+    @staticmethod
     def _apply_text_conversion_rules(text: str, rules: list[dict], mode: str) -> str:
         converted = str(text or "")
         target = "display" if str(mode).strip().lower() == "display" else "send"
         for row in list(rules or []):
             if not isinstance(row, dict):
+                continue
+            if not MainWindow._parse_enabled_value(row.get("enabled", True), True):
                 continue
             src = str(row.get("from", ""))
             if not src:
@@ -1141,14 +1168,38 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("TTS前に適用するテキスト変換（上から順に適用）:"))
 
-        self.conversion_table = QTableWidget(0, 4)
-        self.conversion_table.setHorizontalHeaderLabels(["変換前", "SBV2送信用", "表示用", "表示適用"])
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(QLabel("検索"))
+        self.conversion_search_edit = QLineEdit()
+        self.conversion_search_edit.setPlaceholderText("キーワード（空白区切りでAND検索）")
+        self.conversion_search_edit.textChanged.connect(self._apply_conversion_table_search)
+        tool_row.addWidget(self.conversion_search_edit, 1)
+        tool_row.addWidget(QLabel("並び替え"))
+        self.conversion_sort_combo = _NoWheelAlwaysComboBox()
+        self.conversion_sort_combo.addItem("有効", 0)
+        self.conversion_sort_combo.addItem("変換前", 1)
+        self.conversion_sort_combo.addItem("SBV2送信用", 2)
+        self.conversion_sort_combo.addItem("表示用", 3)
+        self.conversion_sort_combo.addItem("表示適用", 4)
+        tool_row.addWidget(self.conversion_sort_combo)
+        conv_sort_asc = QPushButton("昇順")
+        conv_sort_desc = QPushButton("降順")
+        conv_sort_asc.clicked.connect(lambda: self._sort_conversion_table(Qt.SortOrder.AscendingOrder))
+        conv_sort_desc.clicked.connect(lambda: self._sort_conversion_table(Qt.SortOrder.DescendingOrder))
+        tool_row.addWidget(conv_sort_asc)
+        tool_row.addWidget(conv_sort_desc)
+        layout.addLayout(tool_row)
+
+        self.conversion_table = QTableWidget(0, 5)
+        self.conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "SBV2送信用", "表示用", "表示適用"])
         self.conversion_table.horizontalHeader().setStretchLastSection(True)
-        self.conversion_table.setColumnWidth(0, 220)
+        self.conversion_table.setColumnWidth(0, 62)
         self.conversion_table.setColumnWidth(1, 220)
         self.conversion_table.setColumnWidth(2, 220)
-        self.conversion_table.setColumnWidth(3, 110)
-        self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table)
+        self.conversion_table.setColumnWidth(3, 220)
+        self.conversion_table.setColumnWidth(4, 110)
+        self.conversion_table.setSortingEnabled(True)
+        self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table, last_editable_col=3)
         self._conversion_table_delegate.request_new_row.connect(self._conv_add_row)
         self.conversion_table.setItemDelegate(self._conversion_table_delegate)
         self.conversion_table.installEventFilter(self)
@@ -1164,19 +1215,55 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-    def _conv_add_row(self) -> None:
+    def _sort_conversion_table(self, order: Qt.SortOrder) -> None:
+        col = int(self.conversion_sort_combo.currentData())
+        self.conversion_table.sortItems(col, order)
+        self._apply_conversion_table_search()
+
+    def _apply_conversion_table_search(self) -> None:
+        query = self.conversion_search_edit.text()
+        tokens = [t for t in query.lower().split() if t]
+        table = self.conversion_table
+        for row in range(table.rowCount()):
+            parts = [
+                "有効" if table.item(row, 0) and table.item(row, 0).checkState() == Qt.CheckState.Checked else "無効",
+                (table.item(row, 1).text() if table.item(row, 1) else ""),
+                (table.item(row, 2).text() if table.item(row, 2) else ""),
+                (table.item(row, 3).text() if table.item(row, 3) else ""),
+                "表示適用" if table.item(row, 4) and table.item(row, 4).checkState() == Qt.CheckState.Checked else "表示無効",
+            ]
+            haystack = " ".join(parts).lower()
+            visible = all(token in haystack for token in tokens)
+            table.setRowHidden(row, not visible)
+
+    def _conv_add_row(
+        self,
+        from_text: str = "",
+        to_sbv2: str = "",
+        to_display: str = "",
+        display_apply: bool = False,
+        enabled: bool = True,
+        *,
+        start_edit: bool = True,
+    ) -> None:
         table = self.conversion_table
         table.blockSignals(True)
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, QTableWidgetItem(""))
-        table.setItem(row, 1, QTableWidgetItem(""))
-        table.setItem(row, 2, QTableWidgetItem(""))
-        table.setItem(row, 3, self._new_display_apply_item(False))
+        table.setItem(row, 0, self._new_enabled_item(enabled))
+        table.setItem(row, 1, QTableWidgetItem(from_text))
+        table.setItem(row, 2, QTableWidgetItem(to_sbv2))
+        table.setItem(row, 3, QTableWidgetItem(to_display))
+        table.setItem(row, 4, self._new_display_apply_item(display_apply))
         table.blockSignals(False)
-        table.setCurrentCell(row, 0)
-        table.scrollToItem(table.item(row, 0))
-        table.editItem(table.item(row, 0))
+        table.setCurrentCell(row, 1)
+        table.scrollToItem(table.item(row, 1))
+        if start_edit and not from_text:
+            table.editItem(table.item(row, 1))
+        if start_edit and self.conversion_search_edit.text().strip():
+            self.conversion_search_edit.clear()
+        else:
+            self._apply_conversion_table_search()
         self._on_any_setting_changed()
 
     def _conv_del_row(self) -> None:
@@ -1184,11 +1271,19 @@ class MainWindow(QMainWindow):
         rows = sorted({idx.row() for idx in table.selectedIndexes()}, reverse=True)
         for row in rows:
             table.removeRow(row)
+        self._apply_conversion_table_search()
         self._on_any_setting_changed()
 
     @staticmethod
+    def _new_enabled_item(checked: bool) -> QTableWidgetItem:
+        item = _CheckStateSortItem("")
+        item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+        item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        return item
+
+    @staticmethod
     def _new_display_apply_item(checked: bool) -> QTableWidgetItem:
-        item = QTableWidgetItem("")
+        item = _CheckStateSortItem("")
         item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
         item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         return item
@@ -1201,14 +1296,38 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.addWidget(QLabel("FasterWhisper結果に適用するテキスト変換（Grok送信用/表示用を分離）:"))
 
-        self.transcribe_conversion_table = QTableWidget(0, 4)
-        self.transcribe_conversion_table.setHorizontalHeaderLabels(["変換前", "Grok送信用", "表示用", "表示適用"])
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(QLabel("検索"))
+        self.transcribe_conversion_search_edit = QLineEdit()
+        self.transcribe_conversion_search_edit.setPlaceholderText("キーワード（空白区切りでAND検索）")
+        self.transcribe_conversion_search_edit.textChanged.connect(self._apply_transcribe_conversion_table_search)
+        tool_row.addWidget(self.transcribe_conversion_search_edit, 1)
+        tool_row.addWidget(QLabel("並び替え"))
+        self.transcribe_conversion_sort_combo = _NoWheelAlwaysComboBox()
+        self.transcribe_conversion_sort_combo.addItem("有効", 0)
+        self.transcribe_conversion_sort_combo.addItem("変換前", 1)
+        self.transcribe_conversion_sort_combo.addItem("Grok送信用", 2)
+        self.transcribe_conversion_sort_combo.addItem("表示用", 3)
+        self.transcribe_conversion_sort_combo.addItem("表示適用", 4)
+        tool_row.addWidget(self.transcribe_conversion_sort_combo)
+        trans_sort_asc = QPushButton("昇順")
+        trans_sort_desc = QPushButton("降順")
+        trans_sort_asc.clicked.connect(lambda: self._sort_transcribe_conversion_table(Qt.SortOrder.AscendingOrder))
+        trans_sort_desc.clicked.connect(lambda: self._sort_transcribe_conversion_table(Qt.SortOrder.DescendingOrder))
+        tool_row.addWidget(trans_sort_asc)
+        tool_row.addWidget(trans_sort_desc)
+        layout.addLayout(tool_row)
+
+        self.transcribe_conversion_table = QTableWidget(0, 5)
+        self.transcribe_conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "Grok送信用", "表示用", "表示適用"])
         self.transcribe_conversion_table.horizontalHeader().setStretchLastSection(True)
-        self.transcribe_conversion_table.setColumnWidth(0, 220)
+        self.transcribe_conversion_table.setColumnWidth(0, 62)
         self.transcribe_conversion_table.setColumnWidth(1, 220)
         self.transcribe_conversion_table.setColumnWidth(2, 220)
-        self.transcribe_conversion_table.setColumnWidth(3, 110)
-        self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table)
+        self.transcribe_conversion_table.setColumnWidth(3, 220)
+        self.transcribe_conversion_table.setColumnWidth(4, 110)
+        self.transcribe_conversion_table.setSortingEnabled(True)
+        self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table, last_editable_col=3)
         self._transcribe_conversion_table_delegate.request_new_row.connect(self._transcribe_conv_add_row)
         self.transcribe_conversion_table.setItemDelegate(self._transcribe_conversion_table_delegate)
         self.transcribe_conversion_table.itemChanged.connect(self._on_transcribe_conv_item_changed)
@@ -1225,19 +1344,55 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-    def _transcribe_conv_add_row(self) -> None:
+    def _sort_transcribe_conversion_table(self, order: Qt.SortOrder) -> None:
+        col = int(self.transcribe_conversion_sort_combo.currentData())
+        self.transcribe_conversion_table.sortItems(col, order)
+        self._apply_transcribe_conversion_table_search()
+
+    def _apply_transcribe_conversion_table_search(self) -> None:
+        query = self.transcribe_conversion_search_edit.text()
+        tokens = [t for t in query.lower().split() if t]
+        table = self.transcribe_conversion_table
+        for row in range(table.rowCount()):
+            parts = [
+                "有効" if table.item(row, 0) and table.item(row, 0).checkState() == Qt.CheckState.Checked else "無効",
+                (table.item(row, 1).text() if table.item(row, 1) else ""),
+                (table.item(row, 2).text() if table.item(row, 2) else ""),
+                (table.item(row, 3).text() if table.item(row, 3) else ""),
+                "表示適用" if table.item(row, 4) and table.item(row, 4).checkState() == Qt.CheckState.Checked else "表示無効",
+            ]
+            haystack = " ".join(parts).lower()
+            visible = all(token in haystack for token in tokens)
+            table.setRowHidden(row, not visible)
+
+    def _transcribe_conv_add_row(
+        self,
+        from_text: str = "",
+        to_grok: str = "",
+        to_display: str = "",
+        display_apply: bool = True,
+        enabled: bool = True,
+        *,
+        start_edit: bool = True,
+    ) -> None:
         table = self.transcribe_conversion_table
         table.blockSignals(True)
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, QTableWidgetItem(""))
-        table.setItem(row, 1, QTableWidgetItem(""))
-        table.setItem(row, 2, QTableWidgetItem(""))
-        table.setItem(row, 3, self._new_display_apply_item(True))
+        table.setItem(row, 0, self._new_enabled_item(enabled))
+        table.setItem(row, 1, QTableWidgetItem(from_text))
+        table.setItem(row, 2, QTableWidgetItem(to_grok))
+        table.setItem(row, 3, QTableWidgetItem(to_display))
+        table.setItem(row, 4, self._new_display_apply_item(display_apply))
         table.blockSignals(False)
-        table.setCurrentCell(row, 0)
-        table.scrollToItem(table.item(row, 0))
-        table.editItem(table.item(row, 0))
+        table.setCurrentCell(row, 1)
+        table.scrollToItem(table.item(row, 1))
+        if start_edit and not from_text:
+            table.editItem(table.item(row, 1))
+        if start_edit and self.transcribe_conversion_search_edit.text().strip():
+            self.transcribe_conversion_search_edit.clear()
+        else:
+            self._apply_transcribe_conversion_table_search()
         self._on_live_setting_changed()
 
     def _transcribe_conv_del_row(self) -> None:
@@ -1245,11 +1400,13 @@ class MainWindow(QMainWindow):
         rows = sorted({idx.row() for idx in table.selectedIndexes()}, reverse=True)
         for row in rows:
             table.removeRow(row)
+        self._apply_transcribe_conversion_table_search()
         self._on_live_setting_changed()
 
     def _on_transcribe_conv_item_changed(self, _item: QTableWidgetItem) -> None:
         if self._loading_config:
             return
+        self._apply_transcribe_conversion_table_search()
         self._on_live_setting_changed()
 
     def _build_selenium_tab(self) -> None:
@@ -1430,6 +1587,26 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(scroll, "フィルター")
         layout = QVBoxLayout(tab)
 
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(QLabel("検索"))
+        self.filter_search_edit = QLineEdit()
+        self.filter_search_edit.setPlaceholderText("キーワード（空白区切りでAND検索）")
+        self.filter_search_edit.textChanged.connect(self._apply_filter_table_search)
+        tool_row.addWidget(self.filter_search_edit, 1)
+        tool_row.addWidget(QLabel("並び替え"))
+        self.filter_sort_combo = _NoWheelAlwaysComboBox()
+        self.filter_sort_combo.addItem("有効", 0)
+        self.filter_sort_combo.addItem("パターン", 1)
+        self.filter_sort_combo.addItem("種別", 2)
+        tool_row.addWidget(self.filter_sort_combo)
+        filter_sort_asc = QPushButton("昇順")
+        filter_sort_desc = QPushButton("降順")
+        filter_sort_asc.clicked.connect(lambda: self._sort_filter_table(Qt.SortOrder.AscendingOrder))
+        filter_sort_desc.clicked.connect(lambda: self._sort_filter_table(Qt.SortOrder.DescendingOrder))
+        tool_row.addWidget(filter_sort_asc)
+        tool_row.addWidget(filter_sort_desc)
+        layout.addLayout(tool_row)
+
         btn_row = QHBoxLayout()
         add_btn = QPushButton("行追加")
         add_btn.clicked.connect(self._filter_add_row)
@@ -1440,13 +1617,16 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self.filter_table = QTableWidget(0, 2)
-        self.filter_table.setHorizontalHeaderLabels(["パターン", "種別"])
+        self.filter_table = QTableWidget(0, 3)
+        self.filter_table.setHorizontalHeaderLabels(["有効", "パターン", "種別"])
         self.filter_table.horizontalHeader().setStretchLastSection(False)
-        self.filter_table.horizontalHeader().setSectionResizeMode(0, self.filter_table.horizontalHeader().ResizeMode.Stretch)
-        self.filter_table.horizontalHeader().setSectionResizeMode(1, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
+        self.filter_table.horizontalHeader().setSectionResizeMode(0, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
+        self.filter_table.horizontalHeader().setSectionResizeMode(1, self.filter_table.horizontalHeader().ResizeMode.Stretch)
+        self.filter_table.horizontalHeader().setSectionResizeMode(2, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
+        self.filter_table.setColumnWidth(0, 62)
         self.filter_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._filter_table_delegate = _ConversionTableDelegate(self.filter_table, last_editable_col=0)
+        self.filter_table.setSortingEnabled(True)
+        self._filter_table_delegate = _ConversionTableDelegate(self.filter_table, last_editable_col=1)
         self._filter_table_delegate.request_new_row.connect(lambda: self._filter_add_row())
         self.filter_table.setItemDelegate(self._filter_table_delegate)
         self.filter_table.installEventFilter(self)
@@ -1465,30 +1645,97 @@ class MainWindow(QMainWindow):
             ("NHK", "partial"),
         ]
         for pattern, ftype in defaults:
-            self._filter_add_row(pattern, ftype)
+            self._filter_add_row(pattern, ftype, start_edit=False, notify=False)
 
-    def _filter_add_row(self, pattern: str = "", ftype: str = "partial") -> None:
+    @staticmethod
+    def _find_cell_widget_row(table: QTableWidget, target: QWidget, column: int) -> int:
+        for row in range(table.rowCount()):
+            if table.cellWidget(row, column) is target:
+                return row
+        return -1
+
+    def _sort_filter_table(self, order: Qt.SortOrder) -> None:
+        col = int(self.filter_sort_combo.currentData())
+        self.filter_table.sortItems(col, order)
+        self._apply_filter_table_search()
+
+    def _apply_filter_table_search(self) -> None:
+        query = self.filter_search_edit.text()
+        tokens = [t for t in query.lower().split() if t]
+        table = self.filter_table
+        for row in range(table.rowCount()):
+            type_combo = table.cellWidget(row, 2)
+            type_text = type_combo.currentText() if isinstance(type_combo, QComboBox) else ""
+            parts = [
+                "有効" if table.item(row, 0) and table.item(row, 0).checkState() == Qt.CheckState.Checked else "無効",
+                (table.item(row, 1).text() if table.item(row, 1) else ""),
+                type_text,
+            ]
+            haystack = " ".join(parts).lower()
+            visible = all(token in haystack for token in tokens)
+            table.setRowHidden(row, not visible)
+
+    def _on_filter_type_changed(self, _index: int) -> None:
+        combo = self.sender()
+        if not isinstance(combo, QComboBox):
+            return
+        row = self._find_cell_widget_row(self.filter_table, combo, 2)
+        if row < 0:
+            return
+        item = self.filter_table.item(row, 2)
+        if item is None:
+            item = QTableWidgetItem("")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.filter_table.setItem(row, 2, item)
+        item.setText(combo.currentText())
+        item.setData(Qt.ItemDataRole.UserRole, combo.currentData())
+        self._apply_filter_table_search()
+        self._on_any_setting_changed()
+
+    def _filter_add_row(
+        self,
+        pattern: str = "",
+        ftype: str = "partial",
+        enabled: bool = True,
+        *,
+        start_edit: bool = True,
+        notify: bool = True,
+    ) -> None:
         self.filter_table.blockSignals(True)
         row = self.filter_table.rowCount()
         self.filter_table.insertRow(row)
-        self.filter_table.setItem(row, 0, QTableWidgetItem(pattern))
+        self.filter_table.setItem(row, 0, self._new_enabled_item(enabled))
+        self.filter_table.setItem(row, 1, QTableWidgetItem(pattern))
         combo = _NoWheelComboBox()
         combo.addItem("部分一致", "partial")
         combo.addItem("完全一致", "exact")
         combo.addItem("正規表現", "regex")
         idx = combo.findData(ftype)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.filter_table.setCellWidget(row, 1, combo)
+        combo.currentIndexChanged.connect(self._on_filter_type_changed)
+        type_item = QTableWidgetItem(combo.currentText())
+        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        type_item.setData(Qt.ItemDataRole.UserRole, combo.currentData())
+        self.filter_table.setItem(row, 2, type_item)
+        self.filter_table.setCellWidget(row, 2, combo)
         self.filter_table.blockSignals(False)
-        self.filter_table.setCurrentCell(row, 0)
-        self.filter_table.scrollToItem(self.filter_table.item(row, 0))
-        if not pattern:
-            self.filter_table.editItem(self.filter_table.item(row, 0))
+        self.filter_table.setCurrentCell(row, 1)
+        self.filter_table.scrollToItem(self.filter_table.item(row, 1))
+        if start_edit and not pattern:
+            self.filter_table.editItem(self.filter_table.item(row, 1))
+        if start_edit and self.filter_search_edit.text().strip():
+            self.filter_search_edit.clear()
+        else:
+            self._apply_filter_table_search()
+        if notify:
+            self._on_any_setting_changed()
 
     def _filter_del_row(self) -> None:
         rows = sorted({idx.row() for idx in self.filter_table.selectedIndexes()}, reverse=True)
         for row in rows:
             self.filter_table.removeRow(row)
+        self._apply_filter_table_search()
+        self._on_any_setting_changed()
 
     # ---- ヘルパー ----
 
@@ -1578,7 +1825,7 @@ class MainWindow(QMainWindow):
         self.log_text.appendPlainText(msg)
 
     def _install_clipboard_support(self) -> None:
-        for table in (self.conversion_table, self.transcribe_conversion_table):
+        for table in (self.conversion_table, self.transcribe_conversion_table, self.filter_table):
             table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             table.customContextMenuRequested.connect(lambda pos, t=table: self._show_table_context_menu(t, pos))
 
@@ -1703,7 +1950,17 @@ class MainWindow(QMainWindow):
                     item.setText("")
         finally:
             table.blockSignals(False)
-        self._on_live_setting_changed()
+        if table is self.filter_table:
+            self._apply_filter_table_search()
+            self._on_any_setting_changed()
+        elif table is self.conversion_table:
+            self._apply_conversion_table_search()
+            self._on_any_setting_changed()
+        elif table is self.transcribe_conversion_table:
+            self._apply_transcribe_conversion_table_search()
+            self._on_live_setting_changed()
+        else:
+            self._on_live_setting_changed()
 
     @staticmethod
     def _parse_bool_text(text: str) -> Optional[bool]:
@@ -1740,11 +1997,29 @@ class MainWindow(QMainWindow):
                     if (item.flags() & Qt.ItemFlag.ItemIsUserCheckable) and (bool_val is not None):
                         item.setCheckState(Qt.CheckState.Checked if bool_val else Qt.CheckState.Unchecked)
                         continue
+                    cell_widget = table.cellWidget(row, col)
+                    if isinstance(cell_widget, QComboBox):
+                        idx = cell_widget.findText(raw)
+                        if idx < 0:
+                            idx = cell_widget.findData(raw)
+                        if idx >= 0:
+                            cell_widget.setCurrentIndex(idx)
+                        continue
                     if item.flags() & Qt.ItemFlag.ItemIsEditable:
                         item.setText(raw)
         finally:
             table.blockSignals(False)
-        self._on_live_setting_changed()
+        if table is self.filter_table:
+            self._apply_filter_table_search()
+            self._on_any_setting_changed()
+        elif table is self.conversion_table:
+            self._apply_conversion_table_search()
+            self._on_any_setting_changed()
+        elif table is self.transcribe_conversion_table:
+            self._apply_transcribe_conversion_table_search()
+            self._on_live_setting_changed()
+        else:
+            self._on_live_setting_changed()
 
     def eventFilter(self, obj, event):
         conversion_table = getattr(self, "conversion_table", None)
@@ -1756,14 +2031,14 @@ class MainWindow(QMainWindow):
             ):
                 row = conversion_table.currentRow()
                 col = conversion_table.currentColumn()
-                last_col = conversion_table.columnCount() - 1
+                last_col = 3
                 if row >= 0 and col == last_col:
                     if row == conversion_table.rowCount() - 1:
                         self._conv_add_row()
                     else:
-                        next_item = conversion_table.item(row + 1, 0)
+                        next_item = conversion_table.item(row + 1, 1)
                         if next_item is not None:
-                            conversion_table.setCurrentCell(row + 1, 0)
+                            conversion_table.setCurrentCell(row + 1, 1)
                             conversion_table.editItem(next_item)
                     return True
         if transcribe_table is not None and obj is transcribe_table and event.type() == QEvent.Type.KeyPress:
@@ -1772,14 +2047,14 @@ class MainWindow(QMainWindow):
             ):
                 row = transcribe_table.currentRow()
                 col = transcribe_table.currentColumn()
-                last_col = transcribe_table.columnCount() - 1
+                last_col = 3
                 if row >= 0 and col == last_col:
                     if row == transcribe_table.rowCount() - 1:
                         self._transcribe_conv_add_row()
                     else:
-                        next_item = transcribe_table.item(row + 1, 0)
+                        next_item = transcribe_table.item(row + 1, 1)
                         if next_item is not None:
-                            transcribe_table.setCurrentCell(row + 1, 0)
+                            transcribe_table.setCurrentCell(row + 1, 1)
                             transcribe_table.editItem(next_item)
                     return True
         filter_table = getattr(self, "filter_table", None)
@@ -1788,13 +2063,14 @@ class MainWindow(QMainWindow):
                 event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
             ):
                 row = filter_table.currentRow()
-                if row >= 0:
+                col = filter_table.currentColumn()
+                if row >= 0 and col == 1:
                     if row == filter_table.rowCount() - 1:
                         self._filter_add_row()
                     else:
-                        next_item = filter_table.item(row + 1, 0)
+                        next_item = filter_table.item(row + 1, 1)
                         if next_item is not None:
-                            filter_table.setCurrentCell(row + 1, 0)
+                            filter_table.setCurrentCell(row + 1, 1)
                             filter_table.editItem(next_item)
                     return True
         return super().eventFilter(obj, event)
