@@ -190,6 +190,9 @@ class MainWindow(QMainWindow):
         self._clipboard_shortcuts: list[QShortcut] = []
         self._conversion_table_delegate: Optional[_ConversionTableDelegate] = None
         self._transcribe_conversion_table_delegate: Optional[_ConversionTableDelegate] = None
+        self._conversion_order_seq = 0
+        self._transcribe_conversion_order_seq = 0
+        self._filter_order_seq = 0
 
         self._build_ui()
         self._load_config()
@@ -1176,8 +1179,9 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(self.conversion_search_edit, 1)
         tool_row.addWidget(QLabel("並び替え"))
         self.conversion_sort_combo = _NoWheelAlwaysComboBox()
+        self.conversion_sort_combo.addItem("登録順", 5)
+        self.conversion_sort_combo.addItem("名前順", 1)
         self.conversion_sort_combo.addItem("有効", 0)
-        self.conversion_sort_combo.addItem("変換前", 1)
         self.conversion_sort_combo.addItem("SBV2送信用", 2)
         self.conversion_sort_combo.addItem("表示用", 3)
         self.conversion_sort_combo.addItem("表示適用", 4)
@@ -1190,14 +1194,15 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(conv_sort_desc)
         layout.addLayout(tool_row)
 
-        self.conversion_table = QTableWidget(0, 5)
-        self.conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "SBV2送信用", "表示用", "表示適用"])
+        self.conversion_table = QTableWidget(0, 6)
+        self.conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "SBV2送信用", "表示用", "表示適用", "登録順"])
         self.conversion_table.horizontalHeader().setStretchLastSection(True)
         self.conversion_table.setColumnWidth(0, 62)
         self.conversion_table.setColumnWidth(1, 220)
         self.conversion_table.setColumnWidth(2, 220)
         self.conversion_table.setColumnWidth(3, 220)
         self.conversion_table.setColumnWidth(4, 110)
+        self.conversion_table.setColumnHidden(5, True)
         self.conversion_table.setSortingEnabled(True)
         self._conversion_table_delegate = _ConversionTableDelegate(self.conversion_table, last_editable_col=3)
         self._conversion_table_delegate.request_new_row.connect(self._conv_add_row)
@@ -1243,23 +1248,40 @@ class MainWindow(QMainWindow):
         to_display: str = "",
         display_apply: bool = False,
         enabled: bool = True,
+        order_index: Optional[int] = None,
         *,
         start_edit: bool = True,
     ) -> None:
         table = self.conversion_table
+        sorting_enabled = table.isSortingEnabled()
+        if sorting_enabled:
+            table.setSortingEnabled(False)
         table.blockSignals(True)
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, self._new_enabled_item(enabled))
-        table.setItem(row, 1, QTableWidgetItem(from_text))
-        table.setItem(row, 2, QTableWidgetItem(to_sbv2))
-        table.setItem(row, 3, QTableWidgetItem(to_display))
-        table.setItem(row, 4, self._new_display_apply_item(display_apply))
+        order_value = int(order_index) if order_index is not None else self._conversion_order_seq
+        self._conversion_order_seq = max(self._conversion_order_seq, order_value + 1)
+        enabled_item = self._new_enabled_item(enabled)
+        from_item = QTableWidgetItem(from_text)
+        to_sbv2_item = QTableWidgetItem(to_sbv2)
+        to_display_item = QTableWidgetItem(to_display)
+        display_item = self._new_display_apply_item(display_apply)
+        order_item = QTableWidgetItem("")
+        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        table.setItem(row, 0, enabled_item)
+        table.setItem(row, 1, from_item)
+        table.setItem(row, 2, to_sbv2_item)
+        table.setItem(row, 3, to_display_item)
+        table.setItem(row, 4, display_item)
+        table.setItem(row, 5, order_item)
         table.blockSignals(False)
-        table.setCurrentCell(row, 1)
-        table.scrollToItem(table.item(row, 1))
+        if sorting_enabled:
+            table.setSortingEnabled(True)
+        table.setCurrentItem(from_item)
+        table.scrollToItem(from_item)
         if start_edit and not from_text:
-            table.editItem(table.item(row, 1))
+            table.editItem(from_item)
         if start_edit and self.conversion_search_edit.text().strip():
             self.conversion_search_edit.clear()
         else:
@@ -1304,8 +1326,9 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(self.transcribe_conversion_search_edit, 1)
         tool_row.addWidget(QLabel("並び替え"))
         self.transcribe_conversion_sort_combo = _NoWheelAlwaysComboBox()
+        self.transcribe_conversion_sort_combo.addItem("登録順", 5)
+        self.transcribe_conversion_sort_combo.addItem("名前順", 1)
         self.transcribe_conversion_sort_combo.addItem("有効", 0)
-        self.transcribe_conversion_sort_combo.addItem("変換前", 1)
         self.transcribe_conversion_sort_combo.addItem("Grok送信用", 2)
         self.transcribe_conversion_sort_combo.addItem("表示用", 3)
         self.transcribe_conversion_sort_combo.addItem("表示適用", 4)
@@ -1318,14 +1341,15 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(trans_sort_desc)
         layout.addLayout(tool_row)
 
-        self.transcribe_conversion_table = QTableWidget(0, 5)
-        self.transcribe_conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "Grok送信用", "表示用", "表示適用"])
+        self.transcribe_conversion_table = QTableWidget(0, 6)
+        self.transcribe_conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "Grok送信用", "表示用", "表示適用", "登録順"])
         self.transcribe_conversion_table.horizontalHeader().setStretchLastSection(True)
         self.transcribe_conversion_table.setColumnWidth(0, 62)
         self.transcribe_conversion_table.setColumnWidth(1, 220)
         self.transcribe_conversion_table.setColumnWidth(2, 220)
         self.transcribe_conversion_table.setColumnWidth(3, 220)
         self.transcribe_conversion_table.setColumnWidth(4, 110)
+        self.transcribe_conversion_table.setColumnHidden(5, True)
         self.transcribe_conversion_table.setSortingEnabled(True)
         self._transcribe_conversion_table_delegate = _ConversionTableDelegate(self.transcribe_conversion_table, last_editable_col=3)
         self._transcribe_conversion_table_delegate.request_new_row.connect(self._transcribe_conv_add_row)
@@ -1372,23 +1396,40 @@ class MainWindow(QMainWindow):
         to_display: str = "",
         display_apply: bool = True,
         enabled: bool = True,
+        order_index: Optional[int] = None,
         *,
         start_edit: bool = True,
     ) -> None:
         table = self.transcribe_conversion_table
+        sorting_enabled = table.isSortingEnabled()
+        if sorting_enabled:
+            table.setSortingEnabled(False)
         table.blockSignals(True)
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, self._new_enabled_item(enabled))
-        table.setItem(row, 1, QTableWidgetItem(from_text))
-        table.setItem(row, 2, QTableWidgetItem(to_grok))
-        table.setItem(row, 3, QTableWidgetItem(to_display))
-        table.setItem(row, 4, self._new_display_apply_item(display_apply))
+        order_value = int(order_index) if order_index is not None else self._transcribe_conversion_order_seq
+        self._transcribe_conversion_order_seq = max(self._transcribe_conversion_order_seq, order_value + 1)
+        enabled_item = self._new_enabled_item(enabled)
+        from_item = QTableWidgetItem(from_text)
+        to_grok_item = QTableWidgetItem(to_grok)
+        to_display_item = QTableWidgetItem(to_display)
+        display_item = self._new_display_apply_item(display_apply)
+        order_item = QTableWidgetItem("")
+        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        table.setItem(row, 0, enabled_item)
+        table.setItem(row, 1, from_item)
+        table.setItem(row, 2, to_grok_item)
+        table.setItem(row, 3, to_display_item)
+        table.setItem(row, 4, display_item)
+        table.setItem(row, 5, order_item)
         table.blockSignals(False)
-        table.setCurrentCell(row, 1)
-        table.scrollToItem(table.item(row, 1))
+        if sorting_enabled:
+            table.setSortingEnabled(True)
+        table.setCurrentItem(from_item)
+        table.scrollToItem(from_item)
         if start_edit and not from_text:
-            table.editItem(table.item(row, 1))
+            table.editItem(from_item)
         if start_edit and self.transcribe_conversion_search_edit.text().strip():
             self.transcribe_conversion_search_edit.clear()
         else:
@@ -1595,8 +1636,9 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(self.filter_search_edit, 1)
         tool_row.addWidget(QLabel("並び替え"))
         self.filter_sort_combo = _NoWheelAlwaysComboBox()
+        self.filter_sort_combo.addItem("登録順", 3)
+        self.filter_sort_combo.addItem("名前順", 1)
         self.filter_sort_combo.addItem("有効", 0)
-        self.filter_sort_combo.addItem("パターン", 1)
         self.filter_sort_combo.addItem("種別", 2)
         tool_row.addWidget(self.filter_sort_combo)
         filter_sort_asc = QPushButton("昇順")
@@ -1617,13 +1659,14 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self.filter_table = QTableWidget(0, 3)
-        self.filter_table.setHorizontalHeaderLabels(["有効", "パターン", "種別"])
+        self.filter_table = QTableWidget(0, 4)
+        self.filter_table.setHorizontalHeaderLabels(["有効", "パターン", "種別", "登録順"])
         self.filter_table.horizontalHeader().setStretchLastSection(False)
         self.filter_table.horizontalHeader().setSectionResizeMode(0, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
         self.filter_table.horizontalHeader().setSectionResizeMode(1, self.filter_table.horizontalHeader().ResizeMode.Stretch)
         self.filter_table.horizontalHeader().setSectionResizeMode(2, self.filter_table.horizontalHeader().ResizeMode.ResizeToContents)
         self.filter_table.setColumnWidth(0, 62)
+        self.filter_table.setColumnHidden(3, True)
         self.filter_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.filter_table.setSortingEnabled(True)
         self._filter_table_delegate = _ConversionTableDelegate(self.filter_table, last_editable_col=1)
@@ -1697,15 +1740,26 @@ class MainWindow(QMainWindow):
         pattern: str = "",
         ftype: str = "partial",
         enabled: bool = True,
+        order_index: Optional[int] = None,
         *,
         start_edit: bool = True,
         notify: bool = True,
     ) -> None:
+        sorting_enabled = self.filter_table.isSortingEnabled()
+        if sorting_enabled:
+            self.filter_table.setSortingEnabled(False)
         self.filter_table.blockSignals(True)
         row = self.filter_table.rowCount()
         self.filter_table.insertRow(row)
-        self.filter_table.setItem(row, 0, self._new_enabled_item(enabled))
-        self.filter_table.setItem(row, 1, QTableWidgetItem(pattern))
+        order_value = int(order_index) if order_index is not None else self._filter_order_seq
+        self._filter_order_seq = max(self._filter_order_seq, order_value + 1)
+        enabled_item = self._new_enabled_item(enabled)
+        pattern_item = QTableWidgetItem(pattern)
+        order_item = QTableWidgetItem("")
+        order_item.setData(Qt.ItemDataRole.EditRole, order_value)
+        order_item.setFlags(order_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.filter_table.setItem(row, 0, enabled_item)
+        self.filter_table.setItem(row, 1, pattern_item)
         combo = _NoWheelComboBox()
         combo.addItem("部分一致", "partial")
         combo.addItem("完全一致", "exact")
@@ -1717,12 +1771,15 @@ class MainWindow(QMainWindow):
         type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         type_item.setData(Qt.ItemDataRole.UserRole, combo.currentData())
         self.filter_table.setItem(row, 2, type_item)
+        self.filter_table.setItem(row, 3, order_item)
         self.filter_table.setCellWidget(row, 2, combo)
         self.filter_table.blockSignals(False)
-        self.filter_table.setCurrentCell(row, 1)
-        self.filter_table.scrollToItem(self.filter_table.item(row, 1))
+        if sorting_enabled:
+            self.filter_table.setSortingEnabled(True)
+        self.filter_table.setCurrentItem(pattern_item)
+        self.filter_table.scrollToItem(pattern_item)
         if start_edit and not pattern:
-            self.filter_table.editItem(self.filter_table.item(row, 1))
+            self.filter_table.editItem(pattern_item)
         if start_edit and self.filter_search_edit.text().strip():
             self.filter_search_edit.clear()
         else:

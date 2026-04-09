@@ -361,6 +361,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
                     break
         phrases = data.get("filter_phrases", [])
         if phrases:
+            window._filter_order_seq = 0
             window.filter_table.setRowCount(0)
             for entry in phrases:
                 if isinstance(entry, str):
@@ -371,6 +372,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
                 if pattern:
                     window._filter_add_row(pattern, ftype, enabled, start_edit=False, notify=False)
         stt_conv = data.get("transcribe_conversion_dict", [])
+        window._transcribe_conversion_order_seq = 0
         window.transcribe_conversion_table.setRowCount(0)
         for entry in stt_conv:
             from_text = str(entry.get("from", "")).strip()
@@ -389,6 +391,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
                 start_edit=False,
             )
         conv = data.get("conversion_dict", [])
+        window._conversion_order_seq = 0
         window.conversion_table.setRowCount(0)
         for entry in conv:
             from_text = str(entry.get("from", "")).strip()
