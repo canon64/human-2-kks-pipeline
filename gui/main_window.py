@@ -220,6 +220,7 @@ class MainWindow(QMainWindow):
         self._fw_test_guard_prev_paused = False
         self._sbv2_test_worker: Optional[_TaskWorker] = None
         self._sbv2_test_last_wav: Optional[Path] = None
+        self._sbv2_test_last_run_dir: Optional[Path] = None
         self._sbv2_test_no_send = False
 
         self._manual_history: list[str] = []
@@ -1051,6 +1052,21 @@ class MainWindow(QMainWindow):
         if self._play_wav_in_gui(self._sbv2_test_last_wav):
             self.sbv2_test_status_label.setText("GUI再生中")
 
+    def _cleanup_sbv2_test_run_dir(self, run_dir: Optional[Path]) -> None:
+        if run_dir is None:
+            return
+        try:
+            safe_dir = run_dir.resolve()
+        except Exception:
+            return
+        try:
+            # 安全ガード: grok_tts_outputs/grok_tts_* 以外は削除しない
+            if safe_dir.name.startswith("grok_tts_") and safe_dir.parent.name == "grok_tts_outputs":
+                shutil.rmtree(safe_dir, ignore_errors=True)
+                self._append_log(f"[sbv2-test] temp run cleaned: {safe_dir.name}")
+        except Exception as exc:
+            self._append_log(f"[sbv2-test] temp run cleanup failed: {exc}")
+
     def _run_sbv2_test_task(self, cfg: AppConfig, text: str, no_send_event: bool = False) -> dict:
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
@@ -1194,7 +1210,12 @@ class MainWindow(QMainWindow):
             self._append_log("[sbv2-test] merged wav not found")
             return
 
+        current_run_dir = merged_wav.parent if merged_wav.parent.exists() else None
+        previous_run_dir = self._sbv2_test_last_run_dir
         self._sbv2_test_last_wav = merged_wav
+        self._sbv2_test_last_run_dir = current_run_dir
+        if previous_run_dir is not None and previous_run_dir != current_run_dir:
+            self._cleanup_sbv2_test_run_dir(previous_run_dir)
         if no_send_event:
             if self._play_wav_in_gui(merged_wav):
                 self.sbv2_test_status_label.setText("送信前テスト完了: GUI再生中")
@@ -2683,6 +2704,11 @@ class MainWindow(QMainWindow):
             pass
         try:
             self._cleanup_fw_test_wav()
+        except Exception:
+            pass
+        try:
+            self._cleanup_sbv2_test_run_dir(self._sbv2_test_last_run_dir)
+            self._sbv2_test_last_run_dir = None
         except Exception:
             pass
         self._stop_all()
