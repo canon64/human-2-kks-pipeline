@@ -52,6 +52,7 @@ def _apply_conversion_rules(
     converted = response
     mode = "display" if display_only else "send"
     pick_cache = random_pick_cache if random_pick_cache is not None else {}
+    ordered_rules: list[tuple[int, str, dict[str, Any]]] = []
     for idx, entry in enumerate(rules):
         if not isinstance(entry, dict):
             continue
@@ -60,6 +61,10 @@ def _apply_conversion_rules(
         from_str = str(entry.get("from", ""))
         if not from_str:
             continue
+        ordered_rules.append((idx, from_str, entry))
+
+    ordered_rules.sort(key=lambda x: (-len(x[1]), x[0]))
+    for idx, from_str, entry in ordered_rules:
         cache_key = f"{idx}:{from_str}"
         if display_only:
             if "to_display" in entry:

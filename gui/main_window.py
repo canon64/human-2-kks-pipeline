@@ -687,7 +687,8 @@ class MainWindow(QMainWindow):
     def _apply_text_conversion_rules(text: str, rules: list[dict], mode: str) -> str:
         converted = str(text or "")
         target = "display" if str(mode).strip().lower() == "display" else "send"
-        for row in list(rules or []):
+        ordered_rules: list[tuple[int, str, dict]] = []
+        for idx, row in enumerate(list(rules or [])):
             if not isinstance(row, dict):
                 continue
             if not MainWindow._parse_enabled_value(row.get("enabled", True), True):
@@ -695,6 +696,10 @@ class MainWindow(QMainWindow):
             src = str(row.get("from", ""))
             if not src:
                 continue
+            ordered_rules.append((idx, src, row))
+        ordered_rules.sort(key=lambda x: (-len(x[1]), x[0]))
+
+        for _idx, src, row in ordered_rules:
             if target == "display":
                 if not bool(row.get("display_apply", True)):
                     continue

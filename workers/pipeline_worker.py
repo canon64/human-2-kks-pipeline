@@ -517,7 +517,8 @@ class PipelineWorker(QObject):
 
     def _is_filtered(self, text: str) -> bool:
         lower = text.lower()
-        for entry in self._cfg.filter_phrases:
+        normalized: list[tuple[int, str, str]] = []
+        for idx, entry in enumerate(self._cfg.filter_phrases):
             if isinstance(entry, str):
                 entry = {"pattern": entry, "type": "partial"}
             if not self._entry_enabled(entry, True):
@@ -526,6 +527,10 @@ class PipelineWorker(QObject):
             ftype = entry.get("type", "partial")
             if not pattern:
                 continue
+            normalized.append((idx, pattern, ftype))
+
+        normalized.sort(key=lambda x: (-len(x[1]), x[0]))
+        for _idx, pattern, ftype in normalized:
             if ftype == "exact":
                 if text.strip() == pattern:
                     return True
@@ -853,7 +858,8 @@ class PipelineWorker(QObject):
         with self._transcribe_conv_lock:
             rules = list(self._transcribe_conv_rules)
         target = "display" if str(mode).strip().lower() == "display" else "grok"
-        for row in rules:
+        ordered_rules: list[tuple[int, str, dict]] = []
+        for idx, row in enumerate(rules):
             if not isinstance(row, dict):
                 continue
             if not self._entry_enabled(row, True):
@@ -861,6 +867,10 @@ class PipelineWorker(QObject):
             src = str(row.get("from", ""))
             if not src:
                 continue
+            ordered_rules.append((idx, src, row))
+
+        ordered_rules.sort(key=lambda x: (-len(x[1]), x[0]))
+        for _idx, src, row in ordered_rules:
             if target == "display":
                 if not bool(row.get("display_apply", True)):
                     continue
