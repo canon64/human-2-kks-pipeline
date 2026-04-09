@@ -136,6 +136,8 @@ class _FilterTypeDelegate(QStyledItemDelegate):
         combo = _NoWheelComboBox(parent)
         for label, value in self._choices:
             combo.addItem(label, value)
+        # 1クリック編集時に即ドロップダウンを開く（重複表示防止のためここに一本化）
+        QTimer.singleShot(0, combo.showPopup)
         return combo
 
     def setEditorData(self, editor, index):
@@ -1896,12 +1898,6 @@ class MainWindow(QMainWindow):
             return
         self.filter_table.setCurrentItem(item)
         self.filter_table.editItem(item)
-        # ポップアップ表示はここだけで行う（重複表示回避）
-        def _open_popup() -> None:
-            editor = self.filter_table.focusWidget()
-            if isinstance(editor, QComboBox):
-                editor.showPopup()
-        QTimer.singleShot(0, _open_popup)
 
     def _apply_filter_table_search(self) -> None:
         query = self.filter_search_edit.text()
