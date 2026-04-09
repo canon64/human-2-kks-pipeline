@@ -1289,20 +1289,32 @@ class MainWindow(QMainWindow):
     def _focus_table_item_later(
         self,
         table: QTableWidget,
-        item: Optional[QTableWidgetItem],
         *,
+        focus_col: int,
+        order_col: int,
+        order_value: str,
         edit: bool = False,
     ) -> None:
-        if item is None:
-            return
-
         def _focus() -> None:
-            if item.row() < 0:
+            try:
+                target_item: Optional[QTableWidgetItem] = None
+                for row in range(table.rowCount()):
+                    order_item = table.item(row, order_col)
+                    if order_item is None:
+                        continue
+                    if order_item.text() != order_value:
+                        continue
+                    target_item = table.item(row, focus_col)
+                    break
+                if target_item is None:
+                    return
+                table.setCurrentItem(target_item)
+                table.scrollToItem(target_item, QTableWidget.ScrollHint.PositionAtCenter)
+                if edit and (target_item.flags() & Qt.ItemFlag.ItemIsEditable):
+                    table.editItem(target_item)
+            except RuntimeError:
+                # ウィンドウ破棄タイミングなどでC++側が消えた場合は無視する
                 return
-            table.setCurrentItem(item)
-            table.scrollToItem(item, QTableWidget.ScrollHint.PositionAtCenter)
-            if edit and (item.flags() & Qt.ItemFlag.ItemIsEditable):
-                table.editItem(item)
 
         QTimer.singleShot(0, _focus)
 
@@ -1347,7 +1359,13 @@ class MainWindow(QMainWindow):
             self.conversion_search_edit.clear()
         else:
             self._apply_conversion_table_search()
-        self._focus_table_item_later(table, from_item, edit=bool(start_edit and not from_text))
+        self._focus_table_item_later(
+            table,
+            focus_col=1,
+            order_col=5,
+            order_value=order_item.text(),
+            edit=bool(start_edit and not from_text),
+        )
         self._on_any_setting_changed()
 
     def _conv_del_row(self) -> None:
@@ -1496,7 +1514,13 @@ class MainWindow(QMainWindow):
             self.transcribe_conversion_search_edit.clear()
         else:
             self._apply_transcribe_conversion_table_search()
-        self._focus_table_item_later(table, from_item, edit=bool(start_edit and not from_text))
+        self._focus_table_item_later(
+            table,
+            focus_col=1,
+            order_col=5,
+            order_value=order_item.text(),
+            edit=bool(start_edit and not from_text),
+        )
         self._on_live_setting_changed()
 
     def _transcribe_conv_del_row(self) -> None:
@@ -1814,7 +1838,13 @@ class MainWindow(QMainWindow):
             self.filter_search_edit.clear()
         else:
             self._apply_filter_table_search()
-        self._focus_table_item_later(self.filter_table, pattern_item, edit=bool(start_edit and not pattern))
+        self._focus_table_item_later(
+            self.filter_table,
+            focus_col=1,
+            order_col=3,
+            order_value=order_item.text(),
+            edit=bool(start_edit and not pattern),
+        )
         if notify:
             self._on_any_setting_changed()
 
