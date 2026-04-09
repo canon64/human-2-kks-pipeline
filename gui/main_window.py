@@ -136,6 +136,8 @@ class _FilterTypeDelegate(QStyledItemDelegate):
         combo = _NoWheelComboBox(parent)
         for label, value in self._choices:
             combo.addItem(label, value)
+        # 1クリックで編集開始した直後に、そのままドロップダウンを開く
+        QTimer.singleShot(0, combo.showPopup)
         return combo
 
     def setEditorData(self, editor, index):
@@ -1761,6 +1763,7 @@ class MainWindow(QMainWindow):
         self.filter_table.setItemDelegate(self._filter_table_delegate)
         self._filter_type_delegate = _FilterTypeDelegate(self.filter_table)
         self.filter_table.setItemDelegateForColumn(2, self._filter_type_delegate)
+        self.filter_table.cellClicked.connect(self._on_filter_table_cell_clicked)
         self.filter_table.installEventFilter(self)
         layout.addWidget(self.filter_table, 1)
 
@@ -1783,6 +1786,16 @@ class MainWindow(QMainWindow):
         col = int(self.filter_sort_combo.currentData())
         self.filter_table.sortItems(col, order)
         self._apply_filter_table_search()
+
+    def _on_filter_table_cell_clicked(self, row: int, col: int) -> None:
+        # 種別列は1クリックで直接コンボを開く
+        if col != 2:
+            return
+        item = self.filter_table.item(row, col)
+        if item is None:
+            return
+        self.filter_table.setCurrentItem(item)
+        self.filter_table.editItem(item)
 
     def _apply_filter_table_search(self) -> None:
         query = self.filter_search_edit.text()
