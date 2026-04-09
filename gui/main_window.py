@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from voice_gate_recorder import RecorderConfig, get_input_devices
 
-from PyQt6.QtCore import QObject, QEvent, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QEvent, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemDelegate,
@@ -1281,6 +1281,26 @@ class MainWindow(QMainWindow):
             visible = all(token in haystack for token in tokens)
             table.setRowHidden(row, not visible)
 
+    def _focus_table_item_later(
+        self,
+        table: QTableWidget,
+        item: Optional[QTableWidgetItem],
+        *,
+        edit: bool = False,
+    ) -> None:
+        if item is None:
+            return
+
+        def _focus() -> None:
+            if item.row() < 0:
+                return
+            table.setCurrentItem(item)
+            table.scrollToItem(item, QTableWidget.ScrollHint.PositionAtCenter)
+            if edit and (item.flags() & Qt.ItemFlag.ItemIsEditable):
+                table.editItem(item)
+
+        QTimer.singleShot(0, _focus)
+
     def _conv_add_row(
         self,
         from_text: str = "",
@@ -1317,14 +1337,12 @@ class MainWindow(QMainWindow):
         table.blockSignals(False)
         if sorting_enabled:
             table.setSortingEnabled(True)
-        table.setCurrentItem(from_item)
-        table.scrollToItem(from_item)
-        if start_edit and not from_text:
-            table.editItem(from_item)
-        if start_edit and self.conversion_search_edit.text().strip():
+        needs_search_clear = bool(start_edit and self.conversion_search_edit.text().strip())
+        if needs_search_clear:
             self.conversion_search_edit.clear()
         else:
             self._apply_conversion_table_search()
+        self._focus_table_item_later(table, from_item, edit=bool(start_edit and not from_text))
         self._on_any_setting_changed()
 
     def _conv_del_row(self) -> None:
@@ -1468,14 +1486,12 @@ class MainWindow(QMainWindow):
         table.blockSignals(False)
         if sorting_enabled:
             table.setSortingEnabled(True)
-        table.setCurrentItem(from_item)
-        table.scrollToItem(from_item)
-        if start_edit and not from_text:
-            table.editItem(from_item)
-        if start_edit and self.transcribe_conversion_search_edit.text().strip():
+        needs_search_clear = bool(start_edit and self.transcribe_conversion_search_edit.text().strip())
+        if needs_search_clear:
             self.transcribe_conversion_search_edit.clear()
         else:
             self._apply_transcribe_conversion_table_search()
+        self._focus_table_item_later(table, from_item, edit=bool(start_edit and not from_text))
         self._on_live_setting_changed()
 
     def _transcribe_conv_del_row(self) -> None:
@@ -1788,14 +1804,12 @@ class MainWindow(QMainWindow):
         self.filter_table.blockSignals(False)
         if sorting_enabled:
             self.filter_table.setSortingEnabled(True)
-        self.filter_table.setCurrentItem(pattern_item)
-        self.filter_table.scrollToItem(pattern_item)
-        if start_edit and not pattern:
-            self.filter_table.editItem(pattern_item)
-        if start_edit and self.filter_search_edit.text().strip():
+        needs_search_clear = bool(start_edit and self.filter_search_edit.text().strip())
+        if needs_search_clear:
             self.filter_search_edit.clear()
         else:
             self._apply_filter_table_search()
+        self._focus_table_item_later(self.filter_table, pattern_item, edit=bool(start_edit and not pattern))
         if notify:
             self._on_any_setting_changed()
 
