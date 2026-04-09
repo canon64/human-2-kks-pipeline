@@ -24,7 +24,6 @@ from config.constants import DEFAULT_SOURCE_MODE
 from config.models import AppConfig
 from core.io_utils import (
     last_json_line as _last_json_line,
-    save_text as _save_text,
     wav_duration_sec as _wav_duration_sec,
     with_utf8_env as _with_utf8_env,
 )
@@ -395,7 +394,6 @@ class PipelineWorker(QObject):
             for sub in (
                 "transcripts",
                 "responses",
-                "results",
                 "grok_tts_outputs",
                 "source_wavs",
                 "sbv2_inputs",
@@ -1231,11 +1229,6 @@ class PipelineWorker(QObject):
                 if saved_sbv2_wav is not None:
                     p_json["saved_merged_wav"] = str(saved_sbv2_wav)
                     self.log.emit(f"[save] sbv2_wav: {saved_sbv2_wav}")
-
-            _save_text(
-                self._cfg.output_dir / "results" / f"{stamp}.json",
-                json.dumps(p_json, ensure_ascii=False, indent=2) + "\n",
-            )
 
             female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
             response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
