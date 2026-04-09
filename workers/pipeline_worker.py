@@ -681,7 +681,7 @@ class PipelineWorker(QObject):
         self._emit_sbv2_diagnostics("start_wait_timeout")
         raise RuntimeError("SBV2サーバーの起動タイムアウト (300秒)")
 
-    def _transcribe_via_server(self, wav: Path) -> dict:
+    def _transcribe_via_server(self, wav: Path, trace_id: str = "") -> dict:
         url = f"{self._transcribe_server_url()}/transcribe"
         payload = json.dumps({
             "audio": str(wav),
@@ -690,8 +690,45 @@ class PipelineWorker(QObject):
         }, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Content-Type", "application/json; charset=utf-8")
-        with urllib.request.urlopen(req, timeout=120.0) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        trace = trace_id or wav.stem
+        self.log.emit(
+            "[stt] send "
+            f"trace={trace} wav={wav.name} lang={self._cfg.faster_language} beam={self._cfg.faster_beam}"
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as resp:
+                raw = resp.read()
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                data = json.loads(raw.decode("utf-8"))
+                ok = bool(data.get("ok", False)) if isinstance(data, dict) else False
+                text_len = len(str(data.get("text", ""))) if isinstance(data, dict) else -1
+                self.log.emit(
+                    "[stt] recv "
+                    f"trace={trace} status={getattr(resp, 'status', '?')} bytes={len(raw)} "
+                    f"elapsed_ms={elapsed_ms:.0f} ok={ok} text_len={text_len}"
+                )
+                return data
+        except urllib.error.HTTPError as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                body = ""
+            self.log.emit(
+                "[stt] error "
+                f"trace={trace} type=http status={exc.code} elapsed_ms={elapsed_ms:.0f} "
+                f"detail={(body or str(exc))[:200]}"
+            )
+            raise
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.log.emit(
+                "[stt] error "
+                f"trace={trace} type=exception elapsed_ms={elapsed_ms:.0f} detail={exc}"
+            )
+            raise
 
     @staticmethod
     def _unique_output_path(path: Path) -> Path:
@@ -732,8 +769,9 @@ class PipelineWorker(QObject):
             return
 
         try:
-            self.log.emit(f"[transcribe] {wav.name}")
-            t_json = self._transcribe_via_server(wav)
+            trace = wav.stem
+            self.log.emit(f"[transcribe] {wav.name} trace={trace}")
+            t_json = self._transcribe_via_server(wav, trace_id=trace)
             if not t_json.get("ok"):
                 raise RuntimeError(str(t_json.get("error", "transcribe failed")))
             text = str(t_json.get("text", "")).strip()

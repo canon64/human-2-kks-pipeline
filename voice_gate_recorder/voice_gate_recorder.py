@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +41,8 @@ class RecorderConfig:
     external_control_host: str = "127.0.0.1"
     external_control_port: int = 17911
     external_control_token: str = ""
+    diagnostic_log_enabled: bool = True
+    diagnostic_log_interval_ms: int = 1000
 
 
 def get_input_devices() -> list[tuple[int, str]]:
@@ -113,6 +116,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--external-control-host", default="127.0.0.1", help="UDP bind host for external control.")
     parser.add_argument("--external-control-port", type=int, default=17911, help="UDP bind port for external control.")
     parser.add_argument("--external-control-token", default="", help="Optional auth token for external control.")
+    parser.add_argument(
+        "--diagnostic-log-enabled",
+        dest="diagnostic_log_enabled",
+        action="store_true",
+        help="Enable diagnostic logs for mic open/rms/vad.",
+    )
+    parser.add_argument(
+        "--diagnostic-log-disabled",
+        dest="diagnostic_log_enabled",
+        action="store_false",
+        help="Disable diagnostic logs for mic open/rms/vad.",
+    )
+    parser.add_argument(
+        "--diagnostic-log-interval-ms",
+        type=int,
+        default=1000,
+        help="Diagnostic input-level log interval in milliseconds.",
+    )
+    parser.set_defaults(diagnostic_log_enabled=True)
     parser.add_argument(
         "--list-devices",
         action="store_true",
@@ -255,11 +277,42 @@ class VoiceGateRecorder:
         self._control_thread: Optional[threading.Thread] = None
         self._control_socket: Optional[socket.socket] = None
         self.external_hold_active = False
+        self._diag_last_level_log_monotonic = 0.0
 
     def _log(self, message: str) -> None:
         print(message)
         if self.log_callback is not None:
             self.log_callback(message)
+
+    def _diagnostic_enabled(self) -> bool:
+        return bool(self.cfg.diagnostic_log_enabled)
+
+    def _diagnostic_interval_seconds(self) -> float:
+        return max(0.1, float(max(100, int(self.cfg.diagnostic_log_interval_ms))) / 1000.0)
+
+    def _diag_log(self, message: str) -> None:
+        if self._diagnostic_enabled():
+            self._log(message)
+
+    def _maybe_log_input_level(self, current_dbfs: float, is_voice: bool) -> None:
+        if not self._diagnostic_enabled():
+            return
+        now = time.monotonic()
+        if now - self._diag_last_level_log_monotonic < self._diagnostic_interval_seconds():
+            return
+        self._diag_last_level_log_monotonic = now
+        try:
+            q_len = self.audio_q.qsize()
+        except Exception:
+            q_len = -1
+        trailing_sec = self.trailing_silence_samples / float(self.cfg.sample_rate) if self.cfg.sample_rate > 0 else 0.0
+        silence_limit_sec = self.silence_limit_samples / float(self.cfg.sample_rate) if self.cfg.sample_rate > 0 else 0.0
+        self._log(
+            "[diag][input] "
+            f"dbfs={current_dbfs:.1f} threshold={self.cfg.threshold_dbfs:.1f} "
+            f"voice={int(is_voice)} recording={int(self.recording)} "
+            f"trailing={trailing_sec:.2f}/{silence_limit_sec:.2f}s q={q_len}"
+        )
 
     def _tcp_enabled(self) -> bool:
         return (self.cfg.tcp_host or "").strip() != ""
@@ -393,10 +446,12 @@ class VoiceGateRecorder:
                 if not self.external_hold_active:
                     self.external_hold_active = True
                     self._log("[ctrl] start accepted")
+                    self._diag_log("[diag][vad] external_hold=1 reason=control_start")
             elif cmd == "stop":
                 if self.external_hold_active:
                     self.external_hold_active = False
                     self._log("[ctrl] stop accepted")
+                    self._diag_log("[diag][vad] external_hold=0 reason=control_stop")
                 if self.recording:
                     self.finalize_segment(force=True)
 
@@ -446,18 +501,53 @@ class VoiceGateRecorder:
 
         self._start_tcp_sender()
         self._start_external_control_listener()
+        self._diag_log(
+            "[diag][mic] open_request "
+            f"device={self.cfg.device!r} sample_rate={self.cfg.sample_rate} block_ms={self.cfg.block_ms}"
+        )
         try:
-            stream = sd.InputStream(
-                samplerate=self.cfg.sample_rate,
-                channels=1,
-                dtype="int16",
-                blocksize=self.block_samples,
-                device=self.cfg.device,
-                callback=self.audio_callback,
-                latency="low",
-            )
+            try:
+                default_input_idx: Any = None
+                try:
+                    default_devices = sd.default.device
+                    if isinstance(default_devices, (list, tuple)) and len(default_devices) > 0:
+                        default_input_idx = default_devices[0]
+                except Exception:
+                    pass
+                resolved = sd.query_devices(self.cfg.device, "input")
+                self._diag_log(
+                    "[diag][mic] resolved_device "
+                    f"requested={self.cfg.device!r} default_input={default_input_idx!r} "
+                    f"name={resolved.get('name', '?')} "
+                    f"default_sr={resolved.get('default_samplerate', '?')} "
+                    f"max_input_channels={resolved.get('max_input_channels', '?')}"
+                )
+            except Exception as exc:
+                self._diag_log(f"[diag][mic] resolved_device_failed requested={self.cfg.device!r} error={exc}")
+
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.cfg.sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=self.block_samples,
+                    device=self.cfg.device,
+                    callback=self.audio_callback,
+                    latency="low",
+                )
+            except Exception as exc:
+                self._log(
+                    "[diag][mic] open_failed "
+                    f"device={self.cfg.device!r} sample_rate={self.cfg.sample_rate} "
+                    f"block_ms={self.cfg.block_ms} error={exc}"
+                )
+                raise
 
             with stream:
+                self._diag_log(
+                    "[diag][mic] open_ok "
+                    f"device={self.cfg.device!r} sample_rate={self.cfg.sample_rate} block_samples={self.block_samples}"
+                )
                 self._log(
                     "[info] Listening. "
                     f"threshold={self.cfg.threshold_dbfs} dBFS, "
@@ -496,6 +586,7 @@ class VoiceGateRecorder:
     def process_chunk(self, chunk: np.ndarray) -> None:
         current_dbfs = dbfs_from_int16(chunk)
         is_voice = current_dbfs >= self.cfg.threshold_dbfs
+        self._maybe_log_input_level(current_dbfs, is_voice)
 
         if self._external_control_enabled():
             self._process_chunk_external(chunk, current_dbfs)
@@ -515,6 +606,10 @@ class VoiceGateRecorder:
                 self.segment_peak_dbfs = current_dbfs
                 self.segment_started_at = datetime.now()
                 self._log(f"[start] {self.segment_started_at:%H:%M:%S} {current_dbfs:.1f} dBFS")
+                self._diag_log(
+                    "[diag][vad] start "
+                    f"reason=threshold_cross dbfs={current_dbfs:.1f} threshold={self.cfg.threshold_dbfs:.1f}"
+                )
                 self.pre_roll_frames.clear()
                 self.pre_roll_total_samples = 0
             return
@@ -525,11 +620,28 @@ class VoiceGateRecorder:
             self.segment_peak_dbfs = current_dbfs
 
         if is_voice:
+            if self.trailing_silence_samples > 0:
+                paused = self.trailing_silence_samples / float(self.cfg.sample_rate) if self.cfg.sample_rate > 0 else 0.0
+                self._diag_log(
+                    "[diag][vad] resume "
+                    f"reason=voice_return dbfs={current_dbfs:.1f} silence_for={paused:.2f}s"
+                )
             self.trailing_silence_samples = 0
             return
 
+        if self.trailing_silence_samples <= 0:
+            self._diag_log(
+                "[diag][vad] silence_enter "
+                f"dbfs={current_dbfs:.1f} threshold={self.cfg.threshold_dbfs:.1f}"
+            )
         self.trailing_silence_samples += len(chunk)
         if self.trailing_silence_samples >= self.silence_limit_samples:
+            elapsed = self.trailing_silence_samples / float(self.cfg.sample_rate) if self.cfg.sample_rate > 0 else 0.0
+            limit = self.silence_limit_samples / float(self.cfg.sample_rate) if self.cfg.sample_rate > 0 else 0.0
+            self._diag_log(
+                "[diag][vad] stop "
+                f"reason=silence_limit dbfs={current_dbfs:.1f} elapsed={elapsed:.2f}s limit={limit:.2f}s"
+            )
             self.finalize_segment(force=False)
 
     def _process_chunk_external(self, chunk: np.ndarray, current_dbfs: float) -> None:
@@ -554,6 +666,10 @@ class VoiceGateRecorder:
             self.pre_roll_frames.clear()
             self.pre_roll_total_samples = 0
             self._log(f"[start][external] {self.segment_started_at:%H:%M:%S} {current_dbfs:.1f} dBFS")
+            self._diag_log(
+                "[diag][vad] start "
+                f"reason=external_hold dbfs={current_dbfs:.1f}"
+            )
 
         self.segment_frames.append(chunk)
         self.segment_total_samples += len(chunk)
@@ -579,6 +695,10 @@ class VoiceGateRecorder:
                 f"[discard] duration={duration:.2f}s <= {self.cfg.min_duration_seconds:.2f}s "
                 f"(peak={self.segment_peak_dbfs:.1f} dBFS)"
             )
+            self._diag_log(
+                "[diag][vad] discard "
+                f"reason=min_duration duration={duration:.2f}s min={self.cfg.min_duration_seconds:.2f}s"
+            )
             self.reset_segment()
             return
 
@@ -586,6 +706,11 @@ class VoiceGateRecorder:
         out_path = self.cfg.output_dir / f"voice_{ts}_{duration:.2f}s.wav"
         write_wav(out_path, effective_samples, self.cfg.sample_rate)
         self._log(f"[saved] {out_path} ({duration:.2f}s, peak={self.segment_peak_dbfs:.1f} dBFS)")
+        self._diag_log(
+            "[diag][clip] "
+            f"id={out_path.stem} samples={len(effective_samples)} duration={duration:.2f}s "
+            f"peak={self.segment_peak_dbfs:.1f}dBFS"
+        )
         self._enqueue_tcp_send(out_path)
         self.reset_segment()
 
@@ -640,6 +765,8 @@ def main() -> int:
         external_control_host=args.external_control_host.strip() or "127.0.0.1",
         external_control_port=max(1, int(args.external_control_port)),
         external_control_token=args.external_control_token,
+        diagnostic_log_enabled=bool(args.diagnostic_log_enabled),
+        diagnostic_log_interval_ms=max(100, int(args.diagnostic_log_interval_ms)),
     )
 
     recorder = VoiceGateRecorder(cfg)

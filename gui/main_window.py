@@ -250,6 +250,8 @@ class MainWindow(QMainWindow):
         self.manual_combo = _NoWheelComboBox()
         self.manual_combo.setEditable(True)
         self.manual_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.manual_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.manual_combo.setMinimumContentsLength(12)
         self.manual_combo.lineEdit().setPlaceholderText("テキストを入力して送信...")
         self.manual_combo.lineEdit().returnPressed.connect(self._send_manual)
         self.manual_btn = QPushButton("送信")
@@ -269,6 +271,8 @@ class MainWindow(QMainWindow):
 
         device_row = QHBoxLayout()
         self.device_combo = _NoWheelAlwaysComboBox()
+        self.device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.device_combo.setMinimumContentsLength(12)
         refresh_btn = QPushButton("更新")
         refresh_btn.clicked.connect(self._reload_devices)
         device_row.addWidget(self.device_combo, 1)
@@ -309,12 +313,12 @@ class MainWindow(QMainWindow):
 
     def _build_pipeline_tab(self) -> None:
         inner = QWidget()
-        inner.setMinimumWidth(0)
+        inner.setMinimumWidth(900)
         scroll = QScrollArea()
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
         from PyQt6.QtCore import Qt
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tabs.addTab(scroll, "パイプライン設定")
         form = QFormLayout(inner)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -1489,8 +1493,11 @@ class MainWindow(QMainWindow):
     # ---- ヘルパー ----
 
     def _hrow(self, edit: QLineEdit, btn: QPushButton) -> QWidget:
-        row = QHBoxLayout(); row.addWidget(edit, 1); row.addWidget(btn)
-        w = QWidget(); w.setLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(edit, 1)
+        row.addWidget(btn)
+        w = QWidget()
+        w.setLayout(row)
         return w
 
     def _pick_dir(self, edit: QLineEdit, title: str) -> None:
@@ -2089,6 +2096,8 @@ class MainWindow(QMainWindow):
             device=cfg.device,
             pre_roll_seconds=cfg.pre_roll_seconds,
             post_roll_seconds=cfg.post_roll_seconds,
+            diagnostic_log_enabled=cfg.diagnostic_log_enabled,
+            diagnostic_log_interval_ms=cfg.diagnostic_log_interval_ms,
             tcp_host="", tcp_port=17890, tcp_token="", tcp_timeout_seconds=20.0,
             external_control_enabled=False, external_control_host="127.0.0.1",
             external_control_port=17911, external_control_token="",

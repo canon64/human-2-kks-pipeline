@@ -10,16 +10,51 @@ from PyQt6.QtWidgets import QTableWidgetItem
 from config.models import AppConfig
 
 
-def _read_transcribe_server_port(config_file: Path) -> int:
+def _load_config_json(config_file: Path) -> dict:
     if not config_file.exists():
-        return 18760
+        return {}
     try:
-        return int(json.loads(config_file.read_text(encoding="utf-8")).get("transcribe_server_port", 18760))
+        data = json.loads(config_file.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _read_transcribe_server_port(config_file: Path) -> int:
+    data = _load_config_json(config_file)
+    try:
+        return int(data.get("transcribe_server_port", 18760))
     except Exception:
         return 18760
 
 
+def _read_diagnostic_log_enabled(config_file: Path) -> bool:
+    data = _load_config_json(config_file)
+    value = data.get("diagnostic_log_enabled", True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("", "0", "false", "off", "no"):
+            return False
+        if token in ("1", "true", "on", "yes"):
+            return True
+    return True
+
+
+def _read_diagnostic_log_interval_ms(config_file: Path) -> int:
+    data = _load_config_json(config_file)
+    try:
+        return max(100, int(data.get("diagnostic_log_interval_ms", 1000)))
+    except Exception:
+        return 1000
+
+
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
+    diagnostic_log_enabled = _read_diagnostic_log_enabled(config_file)
+    diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
     filter_phrases = []
     for row in range(window.filter_table.rowCount()):
         item = window.filter_table.item(row, 0)
@@ -119,6 +154,8 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         external_text_token=window.external_text_token_edit.text().strip(),
         external_text_dedupe_max=int(window.external_text_dedupe_spin.value()),
         transcribe_server_port=_read_transcribe_server_port(config_file),
+        diagnostic_log_enabled=diagnostic_log_enabled,
+        diagnostic_log_interval_ms=diagnostic_log_interval_ms,
         sbv2_server_url=window.sbv2_server_url_edit.text().strip() or "http://127.0.0.1:5000",
         sbv2_server_auto_start=window.sbv2_auto_start_chk.isChecked(),
         video_metadata_path=(
@@ -197,6 +234,8 @@ def save_config(
         "external_text_token": cfg.external_text_token,
         "external_text_dedupe_max": cfg.external_text_dedupe_max,
         "transcribe_server_port": cfg.transcribe_server_port,
+        "diagnostic_log_enabled": cfg.diagnostic_log_enabled,
+        "diagnostic_log_interval_ms": cfg.diagnostic_log_interval_ms,
         "sbv2_server_url": cfg.sbv2_server_url,
         "sbv2_server_auto_start": cfg.sbv2_server_auto_start,
         "video_metadata_path": str(cfg.video_metadata_path) if cfg.video_metadata_path else "",

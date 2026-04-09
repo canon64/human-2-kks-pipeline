@@ -66,6 +66,8 @@ def apply_live_settings(window, cfg: AppConfig) -> None:
             pre_roll_seconds=cfg.pre_roll_seconds,
             post_roll_seconds=cfg.post_roll_seconds,
             device=cfg.device,
+            diagnostic_log_enabled=cfg.diagnostic_log_enabled,
+            diagnostic_log_interval_ms=cfg.diagnostic_log_interval_ms,
         )
 
     need_rec = window._is_recorder_needed(cfg)
