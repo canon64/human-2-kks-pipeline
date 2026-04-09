@@ -1134,6 +1134,7 @@ class PipelineWorker(QObject):
         p_cmd = [
             str(self._cfg.pipeline_python), str(pipeline_script),
             "--text", text,
+            "--max-response-chars", str(max(1, int(self._cfg.max_response_chars))),
             "--sbv2-root", str(self._cfg.sbv2_root),
             "--model-name", self._cfg.sbv2_model_name,
             "--speaker", self._cfg.sbv2_speaker,
@@ -1173,6 +1174,9 @@ class PipelineWorker(QObject):
 
         label = "手動" if manual else wav_name
         self.log.emit(f"[pipeline] {label}: {text[:40]}")
+        self.log.emit(
+            f"[grok-limit] request max={max(1, int(self._cfg.max_response_chars))} text_len={len(text or '')}"
+        )
         try:
             p_ret = self._run_cmd(p_cmd, timeout_sec=420.0)
             if p_ret.returncode != 0:
@@ -1185,6 +1189,20 @@ class PipelineWorker(QObject):
             merged_wav_raw = str(p_json.get("merged_wav", "")).strip()
             merged_wav_path = Path(merged_wav_raw) if merged_wav_raw else None
             run_dir = merged_wav_path.parent if merged_wav_path is not None else None
+            raw_len = int(p_json.get("response_raw_length", 0) or 0)
+            capped_len = int(p_json.get("response_capped_length", 0) or 0)
+            truncated = bool(p_json.get("response_truncated", False))
+            max_chars = int(p_json.get("max_response_chars", self._cfg.max_response_chars) or self._cfg.max_response_chars)
+            self.log.emit(
+                f"[grok-limit] max={max_chars} raw_len={raw_len} capped_len={capped_len} truncated={int(truncated)}"
+            )
+            if truncated:
+                self.log.emit(f"[grok-limit] truncated_chars={max(0, raw_len - capped_len)}")
+            response_send = str(p_json.get("response", "") or "")
+            response_display = str(p_json.get("response_display", "") or "")
+            self.log.emit(
+                f"[grok-limit] send_len={len(response_send)} display_len={len(response_display)} line_count={int(p_json.get('line_count', 0) or 0)}"
+            )
 
             if self._cfg.save_sbv2_input_text:
                 sbv2_input_text = ""

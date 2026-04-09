@@ -1027,6 +1027,7 @@ class MainWindow(QMainWindow):
         cmd = [
             str(cfg.pipeline_python), str(script),
             "--response-text", text,
+            "--max-response-chars", str(max(1, int(cfg.max_response_chars))),
             "--sbv2-root", str(cfg.sbv2_root),
             "--model-name", cfg.sbv2_model_name,
             "--speaker", cfg.sbv2_speaker,
@@ -1117,7 +1118,11 @@ class MainWindow(QMainWindow):
             "[sbv2-test] use-sbv2-pre-step "
             f"pipe={cfg.pipe_name} main={cfg.main_index} face={cfg.face} "
             f"keep_face={cfg.keep_current_face} vol={cfg.voice_volume} pitch={cfg.voice_pitch} "
-            f"target={target_host}:{cfg.target_port}{cfg.target_endpoint}"
+            f"target={target_host}:{cfg.target_port}{cfg.target_endpoint} "
+            f"max_response_chars={cfg.max_response_chars}"
+        )
+        self._append_log(
+            f"[sbv2-test][grok-limit] request text_len={len(text)} max={max(1, int(cfg.max_response_chars))}"
         )
 
         self._sbv2_test_no_send = bool(no_send_event)
@@ -1132,6 +1137,17 @@ class MainWindow(QMainWindow):
         no_send_event = self._sbv2_test_no_send
         self._sbv2_test_no_send = False
         data = payload if isinstance(payload, dict) else {}
+        raw_len = int(data.get("response_raw_length", 0) or 0)
+        capped_len = int(data.get("response_capped_length", 0) or 0)
+        truncated = bool(data.get("response_truncated", False))
+        max_chars = int(data.get("max_response_chars", 0) or 0)
+        line_count = int(data.get("line_count", 0) or 0)
+        self._append_log(
+            f"[sbv2-test][grok-limit] max={max_chars} raw_len={raw_len} capped_len={capped_len} truncated={int(truncated)}"
+        )
+        if truncated:
+            self._append_log(f"[sbv2-test][grok-limit] truncated_chars={max(0, raw_len - capped_len)}")
+        self._append_log(f"[sbv2-test][grok-limit] line_count={line_count}")
         response_original = str(data.get("response_original", "")).strip()
         response_send = str(data.get("response", response_original)).strip()
         response_display = str(data.get("response_display", response_original)).strip()

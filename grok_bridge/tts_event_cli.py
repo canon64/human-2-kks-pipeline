@@ -32,6 +32,33 @@ def _split_response_lines(response: str) -> list[str]:
     return [compact] if compact else []
 
 
+def _limit_response_text(
+    response: str,
+    *,
+    max_chars: int,
+    logger,
+    source: str,
+) -> tuple[str, int, int, bool]:
+    safe_max = max(1, int(max_chars))
+    raw_len = len(response or "")
+    logger.info("grok_response_limit_config source=%s max=%d raw_len=%d", source, safe_max, raw_len)
+    if raw_len > safe_max:
+        capped = str(response or "")[:safe_max]
+        logger.info("grok_response_preview_before source=%s text=%r", source, str(response or "")[:80])
+        logger.warning(
+            "grok_response_truncated source=%s raw_len=%d max=%d cut=%d",
+            source,
+            raw_len,
+            safe_max,
+            raw_len - safe_max,
+        )
+        logger.info("grok_response_preview_after source=%s text=%r", source, capped[:80])
+        return capped, raw_len, safe_max, True
+    logger.info("grok_response_within_limit source=%s raw_len=%d max=%d", source, raw_len, safe_max)
+    logger.info("grok_response_preview source=%s text=%r", source, str(response or "")[:80])
+    return str(response or ""), raw_len, raw_len, False
+
+
 def _parse_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -335,6 +362,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--text", default="", help="Text to send to Grok.")
     parser.add_argument("--response-text", default="", help="Use this as Grok response directly (skip Grok).")
+    parser.add_argument("--max-response-chars", type=int, default=1200, help="Maximum Grok response characters to process.")
     parser.add_argument("--port", type=int, default=None, help="Chrome debug port (default from config).")
     parser.add_argument("--config", default=None, help="Grok bridge config path.")
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
@@ -442,15 +470,24 @@ def main() -> int:
             raise RuntimeError("--text or --response-text is required unless --list-models is used.")
 
         if args.response_text.strip():
-            response = args.response_text.strip()
-            logger.info("grok_skipped response_len=%d", len(response))
+            source = "response-text"
+            response_raw = args.response_text.strip()
+            logger.info("grok_skipped response_len=%d", len(response_raw))
         else:
+            source = "grok"
             from .browser import connect_existing_debug_chrome
             from .grok_client import send_text, wait_for_response
 
             driver = connect_existing_debug_chrome(config.debug_port)
             baseline, stop_before = send_text(driver, config, args.text, logger)
-            response = wait_for_response(driver, config, logger, baseline, stop_before)
+            response_raw = wait_for_response(driver, config, logger, baseline, stop_before)
+
+        response, response_raw_len, response_capped_len, response_truncated = _limit_response_text(
+            response_raw,
+            max_chars=args.max_response_chars,
+            logger=logger,
+            source=source,
+        )
 
         # 変換辞書の適用
         response_original = response  # 変換前のGrokレスポンスを保持
@@ -477,6 +514,14 @@ def main() -> int:
         )
 
         lines = _split_response_lines(response)
+        logger.info(
+            "grok_response_processed raw_len=%d capped_len=%d send_len=%d display_len=%d line_count=%d",
+            response_raw_len,
+            response_capped_len,
+            len(response),
+            len(response_display),
+            len(lines),
+        )
         if not lines:
             raise RuntimeError("Grok response is empty.")
 
@@ -625,6 +670,10 @@ def main() -> int:
                 "response": response,
                 "response_original": response_original,
                 "response_display": response_display,
+                "response_raw_length": response_raw_len,
+                "response_capped_length": response_capped_len,
+                "response_truncated": response_truncated,
+                "max_response_chars": max(1, int(args.max_response_chars)),
                 "line_count": len(lines),
                 "line_texts": lines,
                 "line_wavs": [str(p) for p in part_paths],
@@ -647,6 +696,10 @@ def main() -> int:
                 "error": str(exc),
                 "response": "",
                 "response_display": "",
+                "response_raw_length": 0,
+                "response_capped_length": 0,
+                "response_truncated": False,
+                "max_response_chars": max(1, int(args.max_response_chars)),
                 "line_count": 0,
                 "line_texts": [],
                 "line_wavs": [],

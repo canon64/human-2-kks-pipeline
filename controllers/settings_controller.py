@@ -51,6 +51,14 @@ def _read_diagnostic_log_interval_ms(config_file: Path) -> int:
         return 1000
 
 
+def _read_max_response_chars(config_file: Path) -> int:
+    data = _load_config_json(config_file)
+    try:
+        return max(1, int(data.get("max_response_chars", 1200)))
+    except Exception:
+        return 1200
+
+
 def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -68,6 +76,7 @@ def _as_bool(value: object, default: bool) -> bool:
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
     diagnostic_log_enabled = _read_diagnostic_log_enabled(config_file)
     diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
+    max_response_chars = _read_max_response_chars(config_file)
     filter_phrases = []
     for row in range(window.filter_table.rowCount()):
         enabled_item = window.filter_table.item(row, 0)
@@ -182,6 +191,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         external_text_endpoint=window.external_text_endpoint_edit.text().strip() or "/manual-text",
         external_text_token=window.external_text_token_edit.text().strip(),
         external_text_dedupe_max=int(window.external_text_dedupe_spin.value()),
+        max_response_chars=max_response_chars,
         transcribe_server_port=_read_transcribe_server_port(config_file),
         diagnostic_log_enabled=diagnostic_log_enabled,
         diagnostic_log_interval_ms=diagnostic_log_interval_ms,
@@ -262,6 +272,7 @@ def save_config(
         "external_text_endpoint": cfg.external_text_endpoint,
         "external_text_token": cfg.external_text_token,
         "external_text_dedupe_max": cfg.external_text_dedupe_max,
+        "max_response_chars": cfg.max_response_chars,
         "transcribe_server_port": cfg.transcribe_server_port,
         "diagnostic_log_enabled": cfg.diagnostic_log_enabled,
         "diagnostic_log_interval_ms": cfg.diagnostic_log_interval_ms,
