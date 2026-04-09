@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
         self._active_runtime_cfg: Optional[AppConfig] = None
         self._pending_cfg: Optional[AppConfig] = None
         self._last_deferred_live_fields: tuple[str, ...] = tuple()
+        self._run_session_id: Optional[str] = None
         self._fw_test_stream = None
         self._fw_test_chunks: list[np.ndarray] = []
         self._fw_test_sr = 16000
@@ -815,6 +816,12 @@ class MainWindow(QMainWindow):
             wf.setframerate(sample_rate)
             wf.writeframes(int16_pcm.tobytes())
 
+    def _current_session_id(self) -> str:
+        sid = str(self._run_session_id or "").strip()
+        if sid:
+            return sid
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+
     def _cleanup_fw_test_wav(self, payload: Optional[dict] = None) -> None:
         try:
             if self.save_source_wav_chk.isChecked():
@@ -895,12 +902,13 @@ class MainWindow(QMainWindow):
             self._leave_fw_test_guard()
             return
 
-        out_root = Path(self.output_dir_edit.text().strip()).expanduser().resolve() / "tests" / "fasterwhisper"
+        session_dir = f"session_{self._current_session_id()}"
+        out_root = Path(self.output_dir_edit.text().strip()).expanduser().resolve() / "tests" / "fasterwhisper" / session_dir
         wav_path = out_root / f"hold_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]}.wav"
         self._write_wav_float32_mono(wav_path, pcm, self._fw_test_sr)
         self._fw_test_temp_wav = wav_path
         self.fw_test_status_label.setText("文字起こし中...")
-        self._append_log(f"[fw-test] recorded {wav_path.name} ({duration:.2f}s)")
+        self._append_log(f"[fw-test] recorded {wav_path} ({duration:.2f}s)")
         self._leave_fw_test_guard()
         self._fw_test_worker = _TaskWorker(lambda: self._run_fw_test_transcribe(wav_path))
         self._fw_test_worker.result_ready.connect(self._on_fw_test_transcribe_done)
@@ -2509,12 +2517,14 @@ class MainWindow(QMainWindow):
             self._append_log(f"[error] {exc}")
             return
         self._save_config(cfg)
+        self._run_session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._running = True
         self._paused = False
         self._active_runtime_cfg = cfg
         self._last_deferred_live_fields = tuple()
         self.start_btn.setText("■ 停止")
         self.pause_btn.setEnabled(True)
+        self._append_log(f"[session] start session_{self._run_session_id}")
 
         # Selenium自動起動（未接続の場合）→ Workerで非同期実行後にパイプライン起動
         if self._chrome_driver is None:
@@ -2635,6 +2645,7 @@ class MainWindow(QMainWindow):
         self._paused = False
         self._fw_test_guard_active = False
         self._fw_test_guard_prev_paused = False
+        self._run_session_id = None
         self._active_runtime_cfg = None
         self._pending_cfg = None
         self._last_deferred_live_fields = tuple()
