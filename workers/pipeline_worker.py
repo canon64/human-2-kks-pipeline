@@ -60,6 +60,7 @@ class PipelineWorker(QObject):
         self._external_id_queue: deque[str] = deque()
         self._external_id_set: set[str] = set()
         self._external_lock = threading.Lock()
+        self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         # song_kana_map / video_metadata
         _data_dir = PROJECT_ROOT / "data"
         self._song_kana_map_path: Path = _data_dir / "song_kana_map.json"
@@ -767,6 +768,21 @@ class PipelineWorker(QObject):
             self.log.emit(f"[warn] テキスト保存失敗: {path} ({exc})")
             return None
 
+    def _append_session_text(self, subdir: str, text: str, *, label: str = "") -> Optional[Path]:
+        try:
+            out = self._cfg.output_dir / subdir / f"session_{self._session_id}.txt"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            head = f"[{stamp}] {label}".rstrip() + "\n"
+            body = (text or "").rstrip("\n") + "\n\n"
+            with out.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(head)
+                f.write(body)
+            return out
+        except Exception as exc:
+            self.log.emit(f"[warn] セッション追記保存失敗: {subdir} ({exc})")
+            return None
+
     def _copy_output_file(self, src: Path, dst_dir: Path, *, out_name: Optional[str] = None) -> Optional[Path]:
         try:
             if not src.exists() or not src.is_file():
@@ -779,6 +795,9 @@ class PipelineWorker(QObject):
         except Exception as exc:
             self.log.emit(f"[warn] ファイル保存失敗: {src} -> {dst_dir} ({exc})")
             return None
+
+    def _session_dir(self, subdir: str) -> Path:
+        return self._cfg.output_dir / subdir / f"session_{self._session_id}"
 
     def _process_wav(self, wav: Path) -> None:
         if not self._wait_stable(wav):
@@ -805,9 +824,10 @@ class PipelineWorker(QObject):
                 self.log.emit(f"[info] 変換後に空テキスト: {wav.name}")
                 return
             if self._cfg.save_fasterwhisper_text:
-                saved_transcript = self._save_text_file(
-                    self._cfg.output_dir / "transcripts" / f"{wav.stem}.txt",
-                    raw_text + "\n",
+                saved_transcript = self._append_session_text(
+                    "transcripts",
+                    raw_text,
+                    label=f"wav={wav.name}",
                 )
                 if saved_transcript is not None:
                     self.log.emit(f"[save] whisper_text: {saved_transcript}")
@@ -825,7 +845,7 @@ class PipelineWorker(QObject):
             if self._cfg.save_source_wav:
                 saved_wav = self._copy_output_file(
                     wav,
-                    self._cfg.output_dir / "source_wavs",
+                    self._session_dir("source_wavs"),
                 )
                 if saved_wav is not None:
                     self.log.emit(f"[save] source_wav: {saved_wav}")
@@ -1212,9 +1232,10 @@ class PipelineWorker(QObject):
                 if not sbv2_input_text:
                     sbv2_input_text = str(p_json.get("response", "")).strip()
                 if sbv2_input_text:
-                    saved_sbv2_input = self._save_text_file(
-                        self._cfg.output_dir / "sbv2_inputs" / f"{stamp}.txt",
-                        sbv2_input_text + "\n",
+                    saved_sbv2_input = self._append_session_text(
+                        "sbv2_inputs",
+                        sbv2_input_text,
+                        label=f"source={wav_name} lines={int(p_json.get('line_count', 0) or 0)}",
                     )
                     if saved_sbv2_input is not None:
                         p_json["sbv2_input_file"] = str(saved_sbv2_input)
@@ -1223,7 +1244,7 @@ class PipelineWorker(QObject):
             if self._cfg.save_sbv2_output_wav and merged_wav_path is not None:
                 saved_sbv2_wav = self._copy_output_file(
                     merged_wav_path,
-                    self._cfg.output_dir / "sbv2_wavs",
+                    self._session_dir("sbv2_wavs"),
                     out_name=f"{stamp}.wav",
                 )
                 if saved_sbv2_wav is not None:
