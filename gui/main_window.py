@@ -215,6 +215,7 @@ class MainWindow(QMainWindow):
         self._fw_test_chunks: list[np.ndarray] = []
         self._fw_test_sr = 16000
         self._fw_test_worker: Optional[_TaskWorker] = None
+        self._fw_test_temp_wav: Optional[Path] = None
         self._fw_test_guard_active = False
         self._fw_test_guard_prev_paused = False
         self._sbv2_test_worker: Optional[_TaskWorker] = None
@@ -811,6 +812,33 @@ class MainWindow(QMainWindow):
             wf.setframerate(sample_rate)
             wf.writeframes(int16_pcm.tobytes())
 
+    def _cleanup_fw_test_wav(self, payload: Optional[dict] = None) -> None:
+        try:
+            if self.save_source_wav_chk.isChecked():
+                self._fw_test_temp_wav = None
+                return
+        except Exception:
+            pass
+
+        target: Optional[Path] = None
+        if isinstance(payload, dict):
+            audio_path = str(payload.get("audio_path", "")).strip()
+            if audio_path:
+                try:
+                    target = Path(audio_path).resolve()
+                except Exception:
+                    target = None
+        if target is None:
+            target = self._fw_test_temp_wav
+        self._fw_test_temp_wav = None
+        if target is None:
+            return
+        try:
+            target.unlink(missing_ok=True)
+            self._append_log(f"[fw-test] temp wav cleaned: {target.name}")
+        except Exception as exc:
+            self._append_log(f"[fw-test] temp wav cleanup failed: {exc}")
+
     def _fw_test_start_record(self) -> None:
         if self._fw_test_worker is not None and self._fw_test_worker.isRunning():
             self.fw_test_status_label.setText("文字起こし中...")
@@ -867,6 +895,7 @@ class MainWindow(QMainWindow):
         out_root = Path(self.output_dir_edit.text().strip()).expanduser().resolve() / "tests" / "fasterwhisper"
         wav_path = out_root / f"hold_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]}.wav"
         self._write_wav_float32_mono(wav_path, pcm, self._fw_test_sr)
+        self._fw_test_temp_wav = wav_path
         self.fw_test_status_label.setText("文字起こし中...")
         self._append_log(f"[fw-test] recorded {wav_path.name} ({duration:.2f}s)")
         self._leave_fw_test_guard()
@@ -956,11 +985,13 @@ class MainWindow(QMainWindow):
             self.fw_test_display_edit.setPlainText("")
             self.fw_test_status_label.setText("失敗")
             self._append_log(f"[fw-test] failed: {err}")
+        self._cleanup_fw_test_wav(data)
 
     def _on_fw_test_transcribe_error(self, err: str) -> None:
         self._fw_test_worker = None
         self.fw_test_status_label.setText("失敗")
         self._append_log(f"[fw-test] worker error: {err}")
+        self._cleanup_fw_test_wav()
 
     @staticmethod
     def _is_local_kks_running() -> bool:
@@ -2648,6 +2679,10 @@ class MainWindow(QMainWindow):
                 self._fw_test_stream.close()
                 self._fw_test_stream = None
             sd.stop()
+        except Exception:
+            pass
+        try:
+            self._cleanup_fw_test_wav()
         except Exception:
             pass
         self._stop_all()
