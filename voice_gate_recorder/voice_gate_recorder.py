@@ -41,7 +41,7 @@ class RecorderConfig:
     external_control_host: str = "127.0.0.1"
     external_control_port: int = 17911
     external_control_token: str = ""
-    diagnostic_log_enabled: bool = True
+    diagnostic_log_enabled: bool = False
     diagnostic_log_interval_ms: int = 1000
 
 
@@ -134,7 +134,7 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Diagnostic input-level log interval in milliseconds.",
     )
-    parser.set_defaults(diagnostic_log_enabled=True)
+    parser.set_defaults(diagnostic_log_enabled=False)
     parser.add_argument(
         "--list-devices",
         action="store_true",

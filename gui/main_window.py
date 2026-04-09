@@ -406,6 +406,17 @@ class MainWindow(QMainWindow):
         save_w = QWidget(); save_w.setLayout(save_row)
         form.addRow("保存設定", save_w)
 
+        behavior_row = QHBoxLayout()
+        self.max_response_chars_enabled_chk = QCheckBox("応答文字数制限")
+        self.max_response_chars_enabled_chk.setChecked(True)
+        self.diagnostic_log_enabled_chk = QCheckBox("入力診断ログ")
+        self.diagnostic_log_enabled_chk.setChecked(False)
+        behavior_row.addWidget(self.max_response_chars_enabled_chk)
+        behavior_row.addWidget(self.diagnostic_log_enabled_chk)
+        behavior_row.addStretch(1)
+        behavior_w = QWidget(); behavior_w.setLayout(behavior_row)
+        form.addRow("動作設定", behavior_w)
+
         _local_py = str(PROJECT_ROOT / "python" / "python.exe")
         self.faster_python_edit = QLineEdit(_local_py)
         fp_btn = QPushButton("参照")
@@ -1081,10 +1092,11 @@ class MainWindow(QMainWindow):
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
+        response_limit = max(1, int(cfg.max_response_chars)) if cfg.max_response_chars_enabled else 0
         cmd = [
             str(cfg.pipeline_python), str(script),
             "--response-text", text,
-            "--max-response-chars", str(max(1, int(cfg.max_response_chars))),
+            "--max-response-chars", str(response_limit),
             "--sbv2-root", str(cfg.sbv2_root),
             "--model-name", cfg.sbv2_model_name,
             "--speaker", cfg.sbv2_speaker,
@@ -1176,10 +1188,11 @@ class MainWindow(QMainWindow):
             f"pipe={cfg.pipe_name} main={cfg.main_index} face={cfg.face} "
             f"keep_face={cfg.keep_current_face} vol={cfg.voice_volume} pitch={cfg.voice_pitch} "
             f"target={target_host}:{cfg.target_port}{cfg.target_endpoint} "
-            f"max_response_chars={cfg.max_response_chars}"
+            f"max_response_chars={cfg.max_response_chars} enabled={int(cfg.max_response_chars_enabled)}"
         )
+        request_limit = max(1, int(cfg.max_response_chars)) if cfg.max_response_chars_enabled else 0
         self._append_log(
-            f"[sbv2-test][grok-limit] request text_len={len(text)} max={max(1, int(cfg.max_response_chars))}"
+            f"[sbv2-test][grok-limit] request text_len={len(text)} max={request_limit}"
         )
 
         self._sbv2_test_no_send = bool(no_send_event)
@@ -2346,6 +2359,8 @@ class MainWindow(QMainWindow):
         self.save_source_wav_chk.toggled.connect(self._on_any_setting_changed)
         self.save_sbv2_text_chk.toggled.connect(self._on_any_setting_changed)
         self.save_sbv2_wav_chk.toggled.connect(self._on_any_setting_changed)
+        self.max_response_chars_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.diagnostic_log_enabled_chk.toggled.connect(self._on_any_setting_changed)
         self.faster_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_model_edit.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_device_combo.currentTextChanged.connect(self._on_any_setting_changed)

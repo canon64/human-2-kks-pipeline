@@ -1148,11 +1148,12 @@ class PipelineWorker(QObject):
         # カナ変換ルールをconversion_jsonとして渡す（Grokレスポンスに適用される）
         kana_conv = [{"from": r[4], "to": r[1]} for r in self._kana_rules if r[4] and r[1]]
         combined_conv = kana_conv + list(self._cfg.conversion_dict or [])
+        response_limit = max(1, int(self._cfg.max_response_chars)) if self._cfg.max_response_chars_enabled else 0
 
         p_cmd = [
             str(self._cfg.pipeline_python), str(pipeline_script),
             "--text", text,
-            "--max-response-chars", str(max(1, int(self._cfg.max_response_chars))),
+            "--max-response-chars", str(response_limit),
             "--sbv2-root", str(self._cfg.sbv2_root),
             "--model-name", self._cfg.sbv2_model_name,
             "--speaker", self._cfg.sbv2_speaker,
@@ -1193,7 +1194,7 @@ class PipelineWorker(QObject):
         label = "手動" if manual else wav_name
         self.log.emit(f"[pipeline] {label}: {text[:40]}")
         self.log.emit(
-            f"[grok-limit] request max={max(1, int(self._cfg.max_response_chars))} text_len={len(text or '')}"
+            f"[grok-limit] request max={response_limit} enabled={int(self._cfg.max_response_chars_enabled)} text_len={len(text or '')}"
         )
         try:
             p_ret = self._run_cmd(p_cmd, timeout_sec=420.0)

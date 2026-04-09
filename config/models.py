@@ -59,12 +59,13 @@ class AppConfig:
     external_text_endpoint: str
     external_text_token: str
     external_text_dedupe_max: int
+    max_response_chars_enabled: bool = True
     max_response_chars: int = 1200
     transcribe_server_port: int = 18760
     video_metadata_path: Optional[Path] = None
     sbv2_server_url: str = "http://127.0.0.1:5000"
     sbv2_server_auto_start: bool = True
-    diagnostic_log_enabled: bool = True
+    diagnostic_log_enabled: bool = False
     diagnostic_log_interval_ms: int = 1000
     filter_phrases: list[dict] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)

@@ -39,8 +39,14 @@ def _limit_response_text(
     logger,
     source: str,
 ) -> tuple[str, int, int, bool]:
-    safe_max = max(1, int(max_chars))
+    requested_max = int(max_chars)
+    safe_max = max(1, requested_max)
     raw_len = len(response or "")
+    if requested_max <= 0:
+        logger.info("grok_response_limit_config source=%s max=off raw_len=%d", source, raw_len)
+        logger.info("grok_response_unlimited source=%s raw_len=%d", source, raw_len)
+        logger.info("grok_response_preview source=%s text=%r", source, str(response or "")[:80])
+        return str(response or ""), raw_len, raw_len, False
     logger.info("grok_response_limit_config source=%s max=%d raw_len=%d", source, safe_max, raw_len)
     if raw_len > safe_max:
         capped = str(response or "")[:safe_max]
@@ -362,7 +368,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--text", default="", help="Text to send to Grok.")
     parser.add_argument("--response-text", default="", help="Use this as Grok response directly (skip Grok).")
-    parser.add_argument("--max-response-chars", type=int, default=1200, help="Maximum Grok response characters to process.")
+    parser.add_argument("--max-response-chars", type=int, default=1200, help="Maximum Grok response characters to process. Set 0 to disable limit.")
     parser.add_argument("--port", type=int, default=None, help="Chrome debug port (default from config).")
     parser.add_argument("--config", default=None, help="Grok bridge config path.")
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
@@ -673,7 +679,7 @@ def main() -> int:
                 "response_raw_length": response_raw_len,
                 "response_capped_length": response_capped_len,
                 "response_truncated": response_truncated,
-                "max_response_chars": max(1, int(args.max_response_chars)),
+                "max_response_chars": int(args.max_response_chars),
                 "line_count": len(lines),
                 "line_texts": lines,
                 "line_wavs": [str(p) for p in part_paths],
@@ -699,7 +705,7 @@ def main() -> int:
                 "response_raw_length": 0,
                 "response_capped_length": 0,
                 "response_truncated": False,
-                "max_response_chars": max(1, int(args.max_response_chars)),
+                "max_response_chars": int(args.max_response_chars),
                 "line_count": 0,
                 "line_texts": [],
                 "line_wavs": [],

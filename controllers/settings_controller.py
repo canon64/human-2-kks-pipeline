@@ -27,22 +27,6 @@ def _read_transcribe_server_port(config_file: Path) -> int:
         return 18760
 
 
-def _read_diagnostic_log_enabled(config_file: Path) -> bool:
-    data = _load_config_json(config_file)
-    value = data.get("diagnostic_log_enabled", True)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in ("", "0", "false", "off", "no"):
-            return False
-        if token in ("1", "true", "on", "yes"):
-            return True
-    return True
-
-
 def _read_diagnostic_log_interval_ms(config_file: Path) -> int:
     data = _load_config_json(config_file)
     try:
@@ -74,7 +58,6 @@ def _as_bool(value: object, default: bool) -> bool:
 
 
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
-    diagnostic_log_enabled = _read_diagnostic_log_enabled(config_file)
     diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
     max_response_chars = _read_max_response_chars(config_file)
     filter_phrases = []
@@ -191,9 +174,10 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         external_text_endpoint=window.external_text_endpoint_edit.text().strip() or "/manual-text",
         external_text_token=window.external_text_token_edit.text().strip(),
         external_text_dedupe_max=int(window.external_text_dedupe_spin.value()),
+        max_response_chars_enabled=bool(window.max_response_chars_enabled_chk.isChecked()),
         max_response_chars=max_response_chars,
         transcribe_server_port=_read_transcribe_server_port(config_file),
-        diagnostic_log_enabled=diagnostic_log_enabled,
+        diagnostic_log_enabled=bool(window.diagnostic_log_enabled_chk.isChecked()),
         diagnostic_log_interval_ms=diagnostic_log_interval_ms,
         sbv2_server_url=window.sbv2_server_url_edit.text().strip() or "http://127.0.0.1:5000",
         sbv2_server_auto_start=window.sbv2_auto_start_chk.isChecked(),
@@ -272,6 +256,7 @@ def save_config(
         "external_text_endpoint": cfg.external_text_endpoint,
         "external_text_token": cfg.external_text_token,
         "external_text_dedupe_max": cfg.external_text_dedupe_max,
+        "max_response_chars_enabled": cfg.max_response_chars_enabled,
         "max_response_chars": cfg.max_response_chars,
         "transcribe_server_port": cfg.transcribe_server_port,
         "diagnostic_log_enabled": cfg.diagnostic_log_enabled,
@@ -367,6 +352,8 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.external_text_endpoint_edit.setText(s("external_text_endpoint", window.external_text_endpoint_edit.text()))
         window.external_text_token_edit.setText(s("external_text_token", ""))
         window.external_text_dedupe_spin.setValue(i("external_text_dedupe_max", window.external_text_dedupe_spin.value()))
+        window.max_response_chars_enabled_chk.setChecked(b("max_response_chars_enabled", True))
+        window.diagnostic_log_enabled_chk.setChecked(b("diagnostic_log_enabled", False))
         window.sbv2_server_url_edit.setText(s("sbv2_server_url", "http://127.0.0.1:5000"))
         window.sbv2_auto_start_chk.setChecked(b("sbv2_server_auto_start", True))
         window.video_metadata_edit.setText(s("video_metadata_path", window.video_metadata_edit.text()))
