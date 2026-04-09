@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
         self._fw_test_guard_prev_paused = False
         self._sbv2_test_worker: Optional[_TaskWorker] = None
         self._sbv2_test_last_wav: Optional[Path] = None
+        self._sbv2_test_no_send = False
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
@@ -638,10 +639,13 @@ class MainWindow(QMainWindow):
         sbv2_layout.addLayout(vol_row)
 
         btn_row = QHBoxLayout()
+        self.sbv2_test_presend_btn = QPushButton("送信前テスト")
+        self.sbv2_test_presend_btn.clicked.connect(self._run_sbv2_presend_test)
         self.sbv2_test_run_btn = QPushButton("SBV2テスト実行")
         self.sbv2_test_run_btn.clicked.connect(self._run_sbv2_test)
         self.sbv2_test_play_btn = QPushButton("最後の音声をGUI再生")
         self.sbv2_test_play_btn.clicked.connect(self._play_last_sbv2_test)
+        btn_row.addWidget(self.sbv2_test_presend_btn)
         btn_row.addWidget(self.sbv2_test_run_btn)
         btn_row.addWidget(self.sbv2_test_play_btn)
         btn_row.addStretch()
@@ -1016,7 +1020,7 @@ class MainWindow(QMainWindow):
         if self._play_wav_in_gui(self._sbv2_test_last_wav):
             self.sbv2_test_status_label.setText("GUI再生中")
 
-    def _run_sbv2_test_task(self, cfg: AppConfig, text: str) -> dict:
+    def _run_sbv2_test_task(self, cfg: AppConfig, text: str, no_send_event: bool = False) -> dict:
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
@@ -1062,6 +1066,8 @@ class MainWindow(QMainWindow):
             cmd.extend(["--sbv2-server-url", cfg.sbv2_server_url])
         if cfg.conversion_dict:
             cmd.extend(["--conversion-json", json.dumps(list(cfg.conversion_dict), ensure_ascii=False)])
+        if no_send_event:
+            cmd.append("--no-send-event")
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -1080,10 +1086,14 @@ class MainWindow(QMainWindow):
         payload.setdefault("response_original", response_original)
         payload.setdefault("response", self._apply_text_conversion_rules(response_original, cfg.conversion_dict, mode="send"))
         payload.setdefault("response_display", self._apply_text_conversion_rules(response_original, cfg.conversion_dict, mode="display"))
+        payload["no_send_event"] = bool(no_send_event)
         payload["returncode"] = proc.returncode
         return payload
 
-    def _run_sbv2_test(self) -> None:
+    def _run_sbv2_presend_test(self) -> None:
+        self._run_sbv2_test(no_send_event=True)
+
+    def _run_sbv2_test(self, *, no_send_event: bool = False) -> None:
         if self._sbv2_test_worker is not None and self._sbv2_test_worker.isRunning():
             self.sbv2_test_status_label.setText("実行中...")
             return
@@ -1110,14 +1120,17 @@ class MainWindow(QMainWindow):
             f"target={target_host}:{cfg.target_port}{cfg.target_endpoint}"
         )
 
-        self.sbv2_test_status_label.setText("SBV2テスト実行中...")
-        self._sbv2_test_worker = _TaskWorker(lambda: self._run_sbv2_test_task(cfg, text))
+        self._sbv2_test_no_send = bool(no_send_event)
+        self.sbv2_test_status_label.setText("送信前テスト実行中..." if no_send_event else "SBV2テスト実行中...")
+        self._sbv2_test_worker = _TaskWorker(lambda: self._run_sbv2_test_task(cfg, text, no_send_event))
         self._sbv2_test_worker.result_ready.connect(self._on_sbv2_test_done)
         self._sbv2_test_worker.error_occurred.connect(self._on_sbv2_test_error)
         self._sbv2_test_worker.start()
 
     def _on_sbv2_test_done(self, payload: object) -> None:
         self._sbv2_test_worker = None
+        no_send_event = self._sbv2_test_no_send
+        self._sbv2_test_no_send = False
         data = payload if isinstance(payload, dict) else {}
         response_original = str(data.get("response_original", "")).strip()
         response_send = str(data.get("response", response_original)).strip()
@@ -1135,6 +1148,14 @@ class MainWindow(QMainWindow):
             return
 
         self._sbv2_test_last_wav = merged_wav
+        if no_send_event:
+            if self._play_wav_in_gui(merged_wav):
+                self.sbv2_test_status_label.setText("送信前テスト完了: GUI再生中")
+            else:
+                self.sbv2_test_status_label.setText("送信前テスト完了")
+            self._append_log(f"[sbv2-test] no-send-event mode: generated {merged_wav.name}")
+            return
+
         try:
             cfg = self._active_runtime_cfg if self._active_runtime_cfg is not None else self._build_config()
         except Exception as exc:
@@ -1195,6 +1216,7 @@ class MainWindow(QMainWindow):
 
     def _on_sbv2_test_error(self, err: str) -> None:
         self._sbv2_test_worker = None
+        self._sbv2_test_no_send = False
         self.sbv2_test_status_label.setText("失敗")
         self.sbv2_test_original_edit.setPlainText("")
         self.sbv2_test_send_edit.setPlainText("")
