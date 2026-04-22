@@ -58,6 +58,13 @@ def _normalize_face_send_mode(value: object, default: str = "game_preset") -> st
     return default
 
 
+def _normalize_sbv2_mode(value: object, default: str = "auto") -> str:
+    token = str(value or "").strip().lower()
+    if token in ("auto", "http", "local"):
+        return token
+    return default
+
+
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
     diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
     selected_face_preset_name = ""
@@ -194,7 +201,13 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         transcribe_server_port=_read_transcribe_server_port(config_file),
         diagnostic_log_enabled=bool(window.diagnostic_log_enabled_chk.isChecked()),
         diagnostic_log_interval_ms=diagnostic_log_interval_ms,
-        sbv2_server_url=window.sbv2_server_url_edit.text().strip() or "http://127.0.0.1:5000",
+        sbv2_mode=_normalize_sbv2_mode(
+            window.sbv2_mode_combo.currentData()
+            if window.sbv2_mode_combo.currentData() is not None
+            else window.sbv2_mode_combo.currentText(),
+            "auto",
+        ),
+        sbv2_server_url=window.sbv2_server_url_edit.text().strip(),
         sbv2_server_auto_start=window.sbv2_auto_start_chk.isChecked(),
         video_metadata_path=(
             Path(window.video_metadata_edit.text().strip()).expanduser().resolve()
@@ -280,6 +293,7 @@ def save_config(
         "transcribe_server_port": cfg.transcribe_server_port,
         "diagnostic_log_enabled": cfg.diagnostic_log_enabled,
         "diagnostic_log_interval_ms": cfg.diagnostic_log_interval_ms,
+        "sbv2_mode": cfg.sbv2_mode,
         "sbv2_server_url": cfg.sbv2_server_url,
         "sbv2_server_auto_start": cfg.sbv2_server_auto_start,
         "video_metadata_path": str(cfg.video_metadata_path) if cfg.video_metadata_path else "",
@@ -385,7 +399,10 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.max_response_chars_spin.setValue(i("max_response_chars", window.max_response_chars_spin.value()))
         window.max_response_chars_spin.setEnabled(window.max_response_chars_enabled_chk.isChecked())
         window.diagnostic_log_enabled_chk.setChecked(b("diagnostic_log_enabled", False))
-        window.sbv2_server_url_edit.setText(s("sbv2_server_url", "http://127.0.0.1:5000"))
+        sbv2_mode = _normalize_sbv2_mode(data.get("sbv2_mode", "auto"), "auto")
+        sbv2_mode_index = max(0, window.sbv2_mode_combo.findData(sbv2_mode))
+        window.sbv2_mode_combo.setCurrentIndex(sbv2_mode_index)
+        window.sbv2_server_url_edit.setText(s("sbv2_server_url", window.sbv2_server_url_edit.text()))
         window.sbv2_auto_start_chk.setChecked(b("sbv2_server_auto_start", True))
         window.video_metadata_edit.setText(s("video_metadata_path", window.video_metadata_edit.text()))
         window.chrome_port_spin.setValue(i("chrome_debug_port", 9222))

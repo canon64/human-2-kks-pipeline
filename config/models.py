@@ -67,6 +67,7 @@ class AppConfig:
     max_response_chars: int = 600
     transcribe_server_port: int = 18760
     video_metadata_path: Optional[Path] = None
+    sbv2_mode: str = "auto"
     sbv2_server_url: str = "http://127.0.0.1:5000"
     sbv2_server_auto_start: bool = True
     diagnostic_log_enabled: bool = False

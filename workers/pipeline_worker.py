@@ -147,13 +147,14 @@ class PipelineWorker(QObject):
 
     def _emit_sbv2_diagnostics(self, reason: str) -> None:
         proc = self._sbv2_proc
-        url = (self._cfg.sbv2_server_url or "").strip() or "(empty)"
+        url = self._sbv2_server_url() or "(empty)"
+        mode = self._sbv2_effective_mode_label()
         if proc is None:
-            self.log.emit(f"[sbv2-diag] reason={reason} proc=none url={url}")
+            self.log.emit(f"[sbv2-diag] reason={reason} mode={mode} proc=none url={url}")
         else:
             rc = proc.poll()
             state = f"running(pid={proc.pid})" if rc is None else f"exited(pid={proc.pid}, rc={rc})"
-            self.log.emit(f"[sbv2-diag] reason={reason} proc={state} url={url}")
+            self.log.emit(f"[sbv2-diag] reason={reason} mode={mode} proc={state} url={url}")
         if self._sbv2_last_exit_code is not None:
             self.log.emit(
                 f"[sbv2-diag] last_exit code={self._sbv2_last_exit_code} at={self._sbv2_last_exit_at or '(unknown)'}"
@@ -227,6 +228,28 @@ class PipelineWorker(QObject):
         if mode not in ("external", "mic", "both"):
             return DEFAULT_SOURCE_MODE
         return mode
+
+    def _sbv2_mode(self) -> str:
+        mode = str(getattr(self._cfg, "sbv2_mode", "auto") or "auto").strip().lower()
+        if mode in ("auto", "http", "local"):
+            return mode
+        return "auto"
+
+    def _sbv2_server_url(self) -> str:
+        return str(getattr(self._cfg, "sbv2_server_url", "") or "").strip()
+
+    def _sbv2_use_http(self) -> bool:
+        mode = self._sbv2_mode()
+        if mode == "http":
+            return True
+        if mode == "local":
+            return False
+        return bool(self._sbv2_server_url())
+
+    def _sbv2_effective_mode_label(self) -> str:
+        if self._sbv2_mode() == "auto":
+            return "http" if self._sbv2_use_http() else "local"
+        return self._sbv2_mode()
 
     @staticmethod
     def _normalize_endpoint(endpoint: str) -> str:
@@ -635,9 +658,17 @@ class PipelineWorker(QObject):
         raise RuntimeError("転写サーバーの起動タイムアウト (90秒)")
 
     def _start_sbv2_server(self) -> None:
+        if not self._sbv2_use_http():
+            self.log.emit("[sbv2] mode=local: HTTPサーバー起動チェックをスキップ")
+            return
+
+        base_url = self._sbv2_server_url()
+        if not base_url:
+            raise RuntimeError("sbv2_mode=http ですが sbv2_server_url が未設定です")
+
         if not self._cfg.sbv2_server_auto_start:
             return
-        health_url = self._cfg.sbv2_server_url.rstrip("/") + "/models/info"
+        health_url = base_url.rstrip("/") + "/models/info"
         try:
             with urllib.request.urlopen(health_url, timeout=2.0):
                 self.log.emit("[sbv2] 既存SBV2サーバーを再利用")
@@ -1209,8 +1240,10 @@ class PipelineWorker(QObject):
                 p_cmd.extend(["--target-token", self._cfg.target_token])
         if self._cfg.sbv2_model_file:
             p_cmd.extend(["--model-file", self._cfg.sbv2_model_file])
-        if self._cfg.sbv2_server_url:
-            p_cmd.extend(["--sbv2-server-url", self._cfg.sbv2_server_url])
+        if self._sbv2_use_http():
+            sbv2_url = self._sbv2_server_url()
+            if sbv2_url:
+                p_cmd.extend(["--sbv2-server-url", sbv2_url])
         if combined_conv:
             p_cmd.extend(["--conversion-json", json.dumps(combined_conv, ensure_ascii=False)])
         # event-senderは同梱スクリプトを明示指定

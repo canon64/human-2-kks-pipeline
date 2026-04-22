@@ -23,6 +23,8 @@ def deferred_live_fields(cfg_prev: AppConfig, cfg_now: AppConfig) -> list[str]:
         fields.append("transcribe_server_port")
     if cfg_prev.sbv2_root != cfg_now.sbv2_root:
         fields.append("sbv2_root")
+    if cfg_prev.sbv2_mode != cfg_now.sbv2_mode:
+        fields.append("sbv2_mode")
     if cfg_prev.sbv2_server_url != cfg_now.sbv2_server_url:
         fields.append("sbv2_server_url")
     if cfg_prev.sbv2_server_auto_start != cfg_now.sbv2_server_auto_start:

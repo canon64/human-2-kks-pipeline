@@ -489,13 +489,22 @@ class MainWindow(QMainWindow):
         form.addRow("動画メタデータJSON", self._hrow(self.video_metadata_edit, meta_btn))
 
         sbv2_server_row = QHBoxLayout()
+        self.sbv2_mode_combo = _NoWheelComboBox()
+        self.sbv2_mode_combo.addItem("自動", "auto")
+        self.sbv2_mode_combo.addItem("HTTPサーバー", "http")
+        self.sbv2_mode_combo.addItem("ローカル実行", "local")
+        self.sbv2_mode_combo.setCurrentIndex(0)
         self.sbv2_server_url_edit = QLineEdit("http://127.0.0.1:5000")
         self.sbv2_auto_start_chk = QCheckBox("自動起動")
         self.sbv2_auto_start_chk.setChecked(True)
+        sbv2_server_row.addWidget(QLabel("mode"))
+        sbv2_server_row.addWidget(self.sbv2_mode_combo)
         sbv2_server_row.addWidget(self.sbv2_server_url_edit, 1)
         sbv2_server_row.addWidget(self.sbv2_auto_start_chk)
         sbv2_server_w = QWidget(); sbv2_server_w.setLayout(sbv2_server_row)
         form.addRow("SBV2サーバーURL", sbv2_server_w)
+        self.sbv2_mode_combo.currentIndexChanged.connect(self._on_sbv2_mode_changed)
+        self._on_sbv2_mode_changed()
 
         model_row = QHBoxLayout()
         self.model_name_combo = _NoWheelComboBox(); self.model_name_combo.setEditable(True)
@@ -844,6 +853,30 @@ class MainWindow(QMainWindow):
         self.face_preset_name_combo.setEnabled(use_preset_name and (not random_enabled))
         self.face_preset_random_chk.setEnabled(use_preset_name)
         self.face_preset_reload_btn.setEnabled(use_preset_name and (not random_enabled))
+
+    @staticmethod
+    def _normalize_sbv2_mode(value: object) -> str:
+        token = str(value or "").strip().lower()
+        if token in ("auto", "http", "local"):
+            return token
+        return "auto"
+
+    @classmethod
+    def _sbv2_use_http_mode(cls, cfg: AppConfig) -> bool:
+        mode = cls._normalize_sbv2_mode(getattr(cfg, "sbv2_mode", "auto"))
+        if mode == "http":
+            return True
+        if mode == "local":
+            return False
+        return bool((cfg.sbv2_server_url or "").strip())
+
+    def _on_sbv2_mode_changed(self, *_args) -> None:
+        mode = self._normalize_sbv2_mode(
+            self.sbv2_mode_combo.currentData() if self.sbv2_mode_combo.currentData() is not None else self.sbv2_mode_combo.currentText()
+        )
+        use_http_controls = mode in ("auto", "http")
+        self.sbv2_server_url_edit.setEnabled(use_http_controls)
+        self.sbv2_auto_start_chk.setEnabled(use_http_controls)
 
     def _on_sbv2_test_face_changed(self, value: int) -> None:
         if value >= 0 and self.sbv2_test_keep_face_chk.isChecked():
@@ -1328,7 +1361,7 @@ class MainWindow(QMainWindow):
             cmd.extend(["--voice-pitch", str(cfg.voice_pitch)])
         if cfg.sbv2_model_file:
             cmd.extend(["--model-file", cfg.sbv2_model_file])
-        if cfg.sbv2_server_url:
+        if self._sbv2_use_http_mode(cfg) and cfg.sbv2_server_url:
             cmd.extend(["--sbv2-server-url", cfg.sbv2_server_url])
         if cfg.conversion_dict:
             cmd.extend(["--conversion-json", json.dumps(list(cfg.conversion_dict), ensure_ascii=False)])
@@ -1519,7 +1552,9 @@ class MainWindow(QMainWindow):
             return
 
         base_url = (cfg.sbv2_server_url or "").strip()
-        if not base_url:
+        if not self._sbv2_use_http_mode(cfg):
+            self._append_log(f"[sbv2-diag] {reason} sbv2_mode=local: health check skipped")
+        elif not base_url:
             self._append_log(f"[sbv2-diag] {reason} sbv2_server_url is empty")
         else:
             health_url = base_url.rstrip("/") + "/models/info"
@@ -2639,6 +2674,7 @@ class MainWindow(QMainWindow):
         self.pipeline_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.sbv2_root_edit.textChanged.connect(self._on_any_setting_changed)
         self.video_metadata_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sbv2_mode_combo.currentTextChanged.connect(self._on_any_setting_changed)
         self.sbv2_server_url_edit.textChanged.connect(self._on_any_setting_changed)
         self.sbv2_auto_start_chk.toggled.connect(self._on_any_setting_changed)
         self.model_name_combo.currentTextChanged.connect(self._on_any_setting_changed)
