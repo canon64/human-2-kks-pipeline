@@ -459,6 +459,14 @@ class WavWatchTranscriber:
             main_index = str(auto_cfg.get("main", 0))
             face = int(auto_cfg.get("face", -1))
             keep_face = bool(auto_cfg.get("keep_face", False))
+            face_send_mode = str(auto_cfg.get("face_send_mode", "game_preset") or "game_preset").strip().lower()
+            if face_send_mode not in ("game_preset", "preset_name", "preset_id"):
+                face_send_mode = "game_preset"
+            if face_send_mode == "preset_id":
+                face_send_mode = "preset_name"
+            face_preset_id = str(auto_cfg.get("face_preset_id", "") or "").strip()
+            face_preset_name = str(auto_cfg.get("face_preset_name", "") or "").strip()
+            face_preset_random = bool(auto_cfg.get("face_preset_random", False))
             target_host = auto_cfg.get("target_host", "").strip()
             target_port = str(auto_cfg.get("target_port", 18765))
             target_endpoint = auto_cfg.get("target_endpoint", "/voice-face-event")
@@ -480,6 +488,7 @@ class WavWatchTranscriber:
                 "--event-sender", event_sender,
                 "--pipe-name", pipe_name,
                 "--main", main_index,
+                "--face-send-mode", face_send_mode,
             ]
             if model_file:
                 cmd.extend(["--model-file", model_file])
@@ -491,10 +500,24 @@ class WavWatchTranscriber:
                 cmd.extend(["--target-endpoint", target_endpoint])
                 if target_token:
                     cmd.extend(["--target-token", target_token])
-            if keep_face:
-                cmd.append("--keep-current-face")
-            elif face >= 0:
-                cmd.extend(["--face", str(face)])
+            if face_send_mode == "preset_name":
+                if face_preset_random:
+                    cmd.append("--face-preset-random")
+                    self._log("[face-preset] random=1 dropdown_ignored=1")
+                    face_preset_name = ""
+                    face_preset_id = ""
+                if face_preset_name:
+                    cmd.extend(["--face-preset-name", face_preset_name])
+                if face_preset_id:
+                    cmd.extend(["--face-preset-id", face_preset_id])
+                if (not face_preset_random) and (not face_preset_name) and (not face_preset_id):
+                    self._log("[error] face_send_mode=preset_name だが face_preset_name が空")
+                    return
+            else:
+                if keep_face:
+                    cmd.append("--keep-current-face")
+                elif face >= 0:
+                    cmd.extend(["--face", str(face)])
 
             self._log(f"[tts] start pipeline")
             env = os.environ.copy()

@@ -799,6 +799,37 @@ class PipelineWorker(QObject):
     def _session_dir(self, subdir: str) -> Path:
         return self._cfg.output_dir / subdir / f"session_{self._session_id}"
 
+    def _studio_face_preset_json_path(self) -> Path:
+        preferred = (self._cfg.kks_root / "BepInEx" / "plugins" / "StudioFacePresetTool" / "StudioFacePresets.json").resolve()
+        if preferred.exists():
+            return preferred
+        try:
+            fallback_root = PROJECT_ROOT.parents[2]
+            fallback = (fallback_root / "BepInEx" / "plugins" / "StudioFacePresetTool" / "StudioFacePresets.json").resolve()
+            if fallback.exists():
+                return fallback
+        except Exception:
+            pass
+        return preferred
+
+    def _load_studio_face_presets(self) -> list[dict]:
+        path = self._studio_face_preset_json_path()
+        if (not path.exists()) or (not path.is_file()):
+            raise FileNotFoundError(f"StudioFacePresets.json not found: {path}")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        presets = raw.get("Presets", []) if isinstance(raw, dict) else []
+        if not isinstance(presets, list):
+            return []
+        rows: list[dict] = []
+        for entry in presets:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("Name", "")).strip()
+            preset_id = str(entry.get("Id", "")).strip()
+            if name:
+                rows.append({"name": name, "id": preset_id})
+        return rows
+
     def _process_wav(self, wav: Path) -> None:
         if not self._wait_stable(wav):
             self.log.emit(f"[warn] 不安定/一時停止のためスキップ: {wav.name}")
@@ -1186,10 +1217,48 @@ class PipelineWorker(QObject):
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         if sender_ps1.exists():
             p_cmd.extend(["--event-sender", str(sender_ps1)])
-        if self._cfg.keep_current_face:
-            p_cmd.append("--keep-current-face")
-        elif self._cfg.face >= 0:
-            p_cmd.extend(["--face", str(self._cfg.face)])
+        face_send_mode = str(getattr(self._cfg, "face_send_mode", "game_preset") or "game_preset").strip().lower()
+        if face_send_mode not in ("game_preset", "preset_name", "preset_id"):
+            face_send_mode = "game_preset"
+        if face_send_mode == "preset_id":
+            face_send_mode = "preset_name"
+        p_cmd.extend(["--face-send-mode", face_send_mode])
+
+        if face_send_mode == "preset_name":
+            face_preset_name = str(getattr(self._cfg, "face_preset_name", "") or "").strip()
+            face_preset_id = str(getattr(self._cfg, "face_preset_id", "") or "").strip()
+            face_preset_random = bool(getattr(self._cfg, "face_preset_random", False))
+            selected_name = face_preset_name
+            selected_id = face_preset_id
+            preset_path = self._studio_face_preset_json_path()
+            if face_preset_random:
+                p_cmd.append("--face-preset-random")
+                selected_name = ""
+                selected_id = ""
+            if selected_name:
+                p_cmd.extend(["--face-preset-name", selected_name])
+            if selected_id:
+                p_cmd.extend(["--face-preset-id", selected_id])
+            if (not face_preset_random) and (not selected_name) and (not selected_id):
+                raise RuntimeError("face_send_mode=preset_name ですが face_preset_name が未設定です")
+            self.log.emit(
+                "[event-face] "
+                f"mode=preset_name random={int(face_preset_random)} "
+                f"preset_name={face_preset_name or '(empty)'} "
+                f"selected_name={selected_name or '(empty)'} "
+                f"selected_id={selected_id or '(empty)'} "
+                f"dropdown_ignored={int(face_preset_random)} "
+                f"path={preset_path}"
+            )
+        else:
+            if self._cfg.keep_current_face:
+                p_cmd.append("--keep-current-face")
+                self.log.emit("[event-face] mode=game_preset keep_current_face=1")
+            elif self._cfg.face >= 0:
+                p_cmd.extend(["--face", str(self._cfg.face)])
+                self.log.emit(f"[event-face] mode=game_preset face={self._cfg.face}")
+            else:
+                self.log.emit("[event-face] mode=game_preset face=bridge_default")
 
         label = "手動" if manual else wav_name
         self.log.emit(f"[pipeline] {label}: {text[:40]}")
@@ -1204,6 +1273,22 @@ class PipelineWorker(QObject):
                 if "conversion_" in ln:
                     self.log.emit(f"[tts-conv] {ln}")
             p_json = _last_json_line(p_ret.stdout)
+            event_mode = str(p_json.get("event_face_send_mode", "") or "").strip()
+            if event_mode:
+                self.log.emit(
+                    "[event-face][result] "
+                    f"mode={event_mode} sent={int(bool(p_json.get('event_sent', False)))} "
+                    f"preset_name={str(p_json.get('event_face_preset_name', '') or '').strip() or '(empty)'} "
+                    f"preset_id={str(p_json.get('event_face_preset_id', '') or '').strip() or '(empty)'} "
+                    f"random={int(bool(p_json.get('event_face_preset_random', False)))} "
+                    f"picked_name={str(p_json.get('event_face_selected_name', '') or '').strip() or '(empty)'} "
+                    f"picked_id={str(p_json.get('event_face_selected_id', '') or '').strip() or '(empty)'} "
+                    f"face={int(p_json.get('event_face', -1) or -1)} "
+                    f"keep_current_face={int(bool(p_json.get('event_keep_current_face', False)))}"
+                )
+            event_stderr = str(p_json.get("event_stderr", "") or "").strip()
+            if event_stderr:
+                self.log.emit(f"[event-face][stderr] {event_stderr[:240]}")
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             merged_wav_raw = str(p_json.get("merged_wav", "")).strip()
             merged_wav_path = Path(merged_wav_raw) if merged_wav_raw else None

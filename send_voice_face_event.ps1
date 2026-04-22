@@ -11,6 +11,9 @@ param(
     [string]$AssetBundle = "abdata\\sound\\data\\pcm\\c13\\h\\01.unity3d",
     [string]$AssetName = "h_ko_13_03_001",
     [int]$Face = -1,
+    [string]$FacePresetId = "",
+    [string]$FacePresetName = "",
+    [switch]$FacePresetRandom,
     [string]$Faces = "",
     [double]$Volume = -1.0,
     [double]$Pitch = -1.0,
@@ -60,6 +63,9 @@ function Build-SpeakJson(
     [string]$assetBundle,
     [string]$assetName,
     [int]$face,
+    [string]$facePresetId,
+    [string]$facePresetName,
+    [bool]$facePresetRandom,
     [string]$facesText,
     [double]$volume,
     [double]$pitch,
@@ -79,21 +85,35 @@ function Build-SpeakJson(
         $payload.assetName = $assetName
     }
 
-    if ($keepCurrent) {
-        $payload.keepCurrentFace = 1
+    if (-not [string]::IsNullOrWhiteSpace($facePresetName)) {
+        $payload.facePresetName = $facePresetName.Trim()
+        if ($facePresetRandom) {
+            $payload.facePresetRandom = 1
+        }
+        if (-not [string]::IsNullOrWhiteSpace($facePresetId)) {
+            $payload.facePresetId = $facePresetId.Trim()
+        }
     }
-
-    if (-not [string]::IsNullOrWhiteSpace($modeText)) {
-        $payload.faceMode = $modeText
+    elseif (-not [string]::IsNullOrWhiteSpace($facePresetId)) {
+        $payload.facePresetId = $facePresetId.Trim()
     }
+    else {
+        if ($keepCurrent) {
+            $payload.keepCurrentFace = 1
+        }
 
-    if ($face -ge 0) {
-        $payload.face = $face
-    }
+        if (-not [string]::IsNullOrWhiteSpace($modeText)) {
+            $payload.faceMode = $modeText
+        }
 
-    $parsedFaces = Parse-Faces $facesText
-    if ($parsedFaces.Count -gt 0) {
-        $payload.faces = $parsedFaces
+        if ($face -ge 0) {
+            $payload.face = $face
+        }
+
+        $parsedFaces = Parse-Faces $facesText
+        if ($parsedFaces.Count -gt 0) {
+            $payload.faces = $parsedFaces
+        }
     }
 
     if ($volume -ge 0.0) {
@@ -193,27 +213,39 @@ function Send-CommandLine([string]$lineToSend) {
 
     if ($NoSend) {
         Write-Host "[NoSend] $lineToSend"
+        Write-Host "[SendResult] status=skip reason=nosend"
         return
     }
 
     $useRemote = $RemoteHttp.IsPresent -or -not [string]::IsNullOrWhiteSpace($TargetHost)
-    if ($useRemote) {
-        $responseText = Send-HttpLine `
-            -targetHost $TargetHost `
-            -targetPort $TargetPort `
-            -targetEndpoint $TargetEndpoint `
-            -targetToken $TargetToken `
-            -line $lineToSend `
-            -timeoutMs $ConnectTimeoutMs
-        Write-Host "[SentHttp] host=$TargetHost port=$TargetPort endpoint=$(Normalize-Endpoint $TargetEndpoint)"
-        if (-not [string]::IsNullOrWhiteSpace($responseText)) {
-            Write-Host "[HttpResponse] $responseText"
+    $transport = if ($useRemote) { "http" } else { "pipe" }
+    Write-Host "[SendStart] transport=$transport bytes=$([System.Text.Encoding]::UTF8.GetByteCount($lineToSend))"
+    try {
+        if ($useRemote) {
+            $responseText = Send-HttpLine `
+                -targetHost $TargetHost `
+                -targetPort $TargetPort `
+                -targetEndpoint $TargetEndpoint `
+                -targetToken $TargetToken `
+                -line $lineToSend `
+                -timeoutMs $ConnectTimeoutMs
+            Write-Host "[SentHttp] host=$TargetHost port=$TargetPort endpoint=$(Normalize-Endpoint $TargetEndpoint)"
+            if (-not [string]::IsNullOrWhiteSpace($responseText)) {
+                Write-Host "[HttpResponse] $responseText"
+            }
+            Write-Host "[SendResult] status=ok transport=http"
+            return
         }
-        return
-    }
 
-    Send-PipeLine -pipeName $PipeName -line $lineToSend -timeoutMs $ConnectTimeoutMs
-    Write-Host "[SentPipe] $lineToSend"
+        Send-PipeLine -pipeName $PipeName -line $lineToSend -timeoutMs $ConnectTimeoutMs
+        Write-Host "[SentPipe] $lineToSend"
+        Write-Host "[SendResult] status=ok transport=pipe"
+    }
+    catch {
+        $safeError = if ($null -ne $_ -and $null -ne $_.Exception) { $_.Exception.Message } else { "unknown_error" }
+        Write-Host "[SendResult] status=ng transport=$transport error=$safeError"
+        throw
+    }
 }
 
 function Show-InteractiveHelp {
@@ -225,6 +257,8 @@ function Show-InteractiveHelp {
     Write-Host "  wav <path>           -> play wav with keep-current-face mode"
     Write-Host "  keep                 -> keep current face mode"
     Write-Host "  face <id>            -> explicit face id"
+    Write-Host "  preset <id>          -> facePresetId mode"
+    Write-Host "  presetname <name>    -> facePresetName mode"
     Write-Host "  faces <a,b,c>        -> random from face list"
     Write-Host "  asset <name>         -> set default assetName"
     Write-Host "  bundle <path>        -> set default assetBundle"
@@ -281,28 +315,52 @@ function Run-Interactive {
         }
 
         if ($trimmed -eq "keep") {
-            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $true -modeText "keep_current"
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facePresetId "" -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $true -modeText "keep_current"
             Send-CommandLine -lineToSend $jsonLine
             continue
         }
 
         if ($trimmed -match "^wav\s+(.+)$") {
             $wavPath = $Matches[1].Trim()
-            $jsonLine = Build-SpeakJson -main $stateMain -audioPath $wavPath -assetBundle "" -assetName "" -face -1 -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $true -modeText "keep_current"
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath $wavPath -assetBundle "" -assetName "" -face -1 -facePresetId "" -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $true -modeText "keep_current"
             Send-CommandLine -lineToSend $jsonLine
             continue
         }
 
         if ($trimmed -match "^face\s+(-?\d+)$") {
             $faceId = [int]$Matches[1]
-            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face $faceId -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $false -modeText "select"
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face $faceId -facePresetId "" -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $false -modeText "select"
+            Send-CommandLine -lineToSend $jsonLine
+            continue
+        }
+
+        if ($trimmed -match "^preset\s+(.+)$") {
+            $presetId = $Matches[1].Trim()
+            if ([string]::IsNullOrWhiteSpace($presetId)) {
+                Write-Host "[Warn] preset id is empty"
+                continue
+            }
+
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facePresetId $presetId -facePresetName "" -facePresetRandom $false -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $false -modeText ""
+            Send-CommandLine -lineToSend $jsonLine
+            continue
+        }
+
+        if ($trimmed -match "^presetname\s+(.+)$") {
+            $presetName = $Matches[1].Trim()
+            if ([string]::IsNullOrWhiteSpace($presetName)) {
+                Write-Host "[Warn] preset name is empty"
+                continue
+            }
+
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facePresetId "" -facePresetName $presetName -facePresetRandom $false -facesText "" -volume $Volume -pitch $Pitch -keepCurrent $false -modeText ""
             Send-CommandLine -lineToSend $jsonLine
             continue
         }
 
         if ($trimmed -match "^faces\s+(.+)$") {
             $facesText = $Matches[1].Trim()
-            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facesText $facesText -volume $Volume -pitch $Pitch -keepCurrent $false -modeText "select"
+            $jsonLine = Build-SpeakJson -main $stateMain -audioPath "" -assetBundle $stateAssetBundle -assetName $stateAssetName -face -1 -facePresetId "" -facesText $facesText -volume $Volume -pitch $Pitch -keepCurrent $false -modeText "select"
             Send-CommandLine -lineToSend $jsonLine
             continue
         }
@@ -332,7 +390,7 @@ if ([string]::IsNullOrWhiteSpace($lineToSend)) {
         $lineToSend = '{"type":"stop"}'
     }
     else {
-        $lineToSend = Build-SpeakJson -main $Main -audioPath $AudioPath -assetBundle $AssetBundle -assetName $AssetName -face $Face -facesText $Faces -volume $Volume -pitch $Pitch -keepCurrent $KeepCurrentFace.IsPresent -modeText $FaceMode
+        $lineToSend = Build-SpeakJson -main $Main -audioPath $AudioPath -assetBundle $AssetBundle -assetName $AssetName -face $Face -facePresetId $FacePresetId -facePresetName $FacePresetName -facePresetRandom $FacePresetRandom.IsPresent -facesText $Faces -volume $Volume -pitch $Pitch -keepCurrent $KeepCurrentFace.IsPresent -modeText $FaceMode
     }
 }
 

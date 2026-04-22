@@ -49,8 +49,25 @@ def _as_bool(value: object, default: bool) -> bool:
     return default
 
 
+def _normalize_face_send_mode(value: object, default: str = "game_preset") -> str:
+    token = str(value or "").strip().lower()
+    if token == "preset_id":
+        return "preset_name"
+    if token in ("game_preset", "preset_name"):
+        return token
+    return default
+
+
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
     diagnostic_log_interval_ms = _read_diagnostic_log_interval_ms(config_file)
+    selected_face_preset_name = ""
+    selected_face_preset_id = ""
+    selected_face_preset_data = window.face_preset_name_combo.currentData()
+    if isinstance(selected_face_preset_data, dict):
+        selected_face_preset_name = str(selected_face_preset_data.get("name", "")).strip()
+        selected_face_preset_id = str(selected_face_preset_data.get("id", "")).strip()
+    if (not selected_face_preset_name) and (not isinstance(selected_face_preset_data, dict)):
+        selected_face_preset_name = window.face_preset_name_combo.currentText().strip()
     filter_phrases = []
     for row in range(window.filter_table.rowCount()):
         enabled_item = window.filter_table.item(row, 0)
@@ -158,6 +175,13 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         main_index=int(window.main_spin.value()),
         face=int(window.face_spin.value()),
         keep_current_face=bool(window.keep_face_chk.isChecked()),
+        face_send_mode=_normalize_face_send_mode(
+            window.face_mode_combo.currentData() if window.face_mode_combo.currentData() is not None else window.face_mode_combo.currentText(),
+            "game_preset",
+        ),
+        face_preset_id=selected_face_preset_id,
+        face_preset_name=selected_face_preset_name,
+        face_preset_random=bool(window.face_preset_random_chk.isChecked()),
         source_mode=window.source_mode_combo.currentText().strip().lower() or default_source_mode,
         external_text_enabled=bool(window.external_text_chk.isChecked()),
         external_text_host=window.external_text_host_edit.text().strip() or "127.0.0.1",
@@ -240,6 +264,10 @@ def save_config(
         "main_index": cfg.main_index,
         "face": cfg.face,
         "keep_current_face": cfg.keep_current_face,
+        "face_send_mode": cfg.face_send_mode,
+        "face_preset_id": cfg.face_preset_id,
+        "face_preset_name": cfg.face_preset_name,
+        "face_preset_random": cfg.face_preset_random,
         "source_mode": cfg.source_mode,
         "external_text_enabled": cfg.external_text_enabled,
         "external_text_host": cfg.external_text_host,
@@ -336,6 +364,16 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.main_spin.setValue(i("main_index", window.main_spin.value()))
         window.face_spin.setValue(i("face", window.face_spin.value()))
         window.keep_face_chk.setChecked(b("keep_current_face", True))
+        if hasattr(window, "_reload_face_preset_names"):
+            window._reload_face_preset_names(keep_selection=False)
+        mode = _normalize_face_send_mode(data.get("face_send_mode", "game_preset"), "game_preset")
+        mode_index = max(0, window.face_mode_combo.findData(mode))
+        window.face_mode_combo.setCurrentIndex(mode_index)
+        face_preset_name = str(data.get("face_preset_name", "")).strip()
+        face_preset_id = str(data.get("face_preset_id", "")).strip()
+        if hasattr(window, "_select_face_preset"):
+            window._select_face_preset(face_preset_name, face_preset_id)
+        window.face_preset_random_chk.setChecked(b("face_preset_random", False))
         window.source_mode_combo.setCurrentText(s("source_mode", default_source_mode))
         window.external_text_chk.setChecked(b("external_text_enabled", True))
         window.external_text_host_edit.setText(s("external_text_host", window.external_text_host_edit.text()))
@@ -415,5 +453,11 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.manual_combo.clear()
         for h in window._manual_history:
             window.manual_combo.addItem(h)
+        if hasattr(window, "_reset_manual_input"):
+            window._reset_manual_input()
+        else:
+            window.manual_combo.setCurrentIndex(-1)
+            if window.manual_combo.lineEdit() is not None:
+                window.manual_combo.lineEdit().clear()
     finally:
         window._loading_config = False

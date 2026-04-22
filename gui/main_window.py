@@ -2,7 +2,6 @@
 
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -63,6 +62,16 @@ from controllers.runtime_controller import (
     on_any_setting_changed as _on_any_setting_changed_impl,
     on_live_setting_changed as _on_live_setting_changed_impl,
 )
+from controllers.preset_controller import (
+    load_active_presets as _load_active_presets_impl,
+    load_presets as _load_presets_impl,
+    new_preset_id as _new_preset_id,
+    normalize_dictionary_entries as _normalize_dictionary_entries,
+    normalize_transcription_entries as _normalize_transcription_entries,
+    now_iso8601 as _now_iso8601,
+    save_active_presets as _save_active_presets_impl,
+    save_presets as _save_presets_impl,
+)
 from controllers.settings_controller import (
     build_config as _build_config_impl,
     load_config as _load_config_impl,
@@ -79,6 +88,10 @@ from workers.recorder_worker import RecorderWorker
 from workers.thread_workers import SeleniumWorker as _SeleniumWorker, TaskWorker as _TaskWorker
 
 CONFIG_FILE = PROJECT_ROOT / "config.json"
+PRESET_CONFIG_DIR = PROJECT_ROOT / "config"
+TRANSCRIPTION_PRESETS_FILE = PRESET_CONFIG_DIR / "transcription_presets.json"
+DICTIONARY_PRESETS_FILE = PRESET_CONFIG_DIR / "dictionary_presets.json"
+ACTIVE_PRESETS_FILE = PRESET_CONFIG_DIR / "active_presets.json"
 
 
 class _ConversionTableDelegate(QStyledItemDelegate):
@@ -228,6 +241,10 @@ class MainWindow(QMainWindow):
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
+        self._transcribe_conversion_presets: list[dict] = []
+        self._dictionary_presets: list[dict] = []
+        self._active_transcribe_preset_id = ""
+        self._active_dictionary_preset_id = ""
         self._loading_config = False
         self._clipboard_shortcuts: list[QShortcut] = []
         self._conversion_table_delegate: Optional[_ConversionTableDelegate] = None
@@ -235,8 +252,10 @@ class MainWindow(QMainWindow):
         self._conversion_order_seq = 0
         self._transcribe_conversion_order_seq = 0
         self._filter_order_seq = 0
+        self._face_preset_rows: list[dict] = []
 
         self._build_ui()
+        self._load_conversion_presets()
         self._load_config()
         self._install_autosave_hooks()
         self._install_clipboard_support()
@@ -308,6 +327,8 @@ class MainWindow(QMainWindow):
         self.manual_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.manual_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.manual_combo.setMinimumContentsLength(12)
+        # 履歴はドロップダウンで選べるようにしつつ、入力中の自動補完は無効化する
+        self.manual_combo.setCompleter(None)
         self.manual_combo.lineEdit().setPlaceholderText("テキストを入力して送信...")
         self.manual_combo.lineEdit().returnPressed.connect(self._send_manual)
         self.manual_btn = QPushButton("送信")
@@ -315,6 +336,7 @@ class MainWindow(QMainWindow):
         manual_layout.addWidget(self.manual_combo, 1)
         manual_layout.addWidget(self.manual_btn)
         root_layout.addWidget(manual_group)
+        self._reset_manual_input()
 
     def _build_recorder_tab(self) -> None:
         inner = QWidget()
@@ -411,7 +433,7 @@ class MainWindow(QMainWindow):
         self.max_response_chars_enabled_chk.setChecked(True)
         self.max_response_chars_spin = _NoWheelSpinBox()
         self.max_response_chars_spin.setRange(1, 20000)
-        self.max_response_chars_spin.setValue(1200)
+        self.max_response_chars_spin.setValue(600)
         self.max_response_chars_spin.setSuffix(" 文字")
         self.max_response_chars_spin.setEnabled(True)
         self.max_response_chars_enabled_chk.toggled.connect(self.max_response_chars_spin.setEnabled)
@@ -527,6 +549,29 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self.keep_face_chk)
         o = QWidget(); o.setLayout(opt_row)
         form.addRow("送信設定", o)
+
+        face_mode_row = QHBoxLayout()
+        self.face_mode_combo = _NoWheelComboBox()
+        self.face_mode_combo.addItem("ゲームプリセット", "game_preset")
+        self.face_mode_combo.addItem("FacePreset Name", "preset_name")
+        self.face_mode_combo.setCurrentIndex(0)
+        self.face_preset_name_combo = _NoWheelComboBox()
+        self.face_preset_name_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.face_preset_random_chk = QCheckBox("ランダム送信")
+        self.face_preset_reload_btn = QPushButton("更新")
+        self.face_preset_reload_btn.clicked.connect(self._reload_face_preset_names)
+        face_mode_row.addWidget(QLabel("mode"))
+        face_mode_row.addWidget(self.face_mode_combo)
+        face_mode_row.addWidget(QLabel("presetName"))
+        face_mode_row.addWidget(self.face_preset_name_combo, 2)
+        face_mode_row.addWidget(self.face_preset_random_chk)
+        face_mode_row.addWidget(self.face_preset_reload_btn)
+        fm = QWidget(); fm.setLayout(face_mode_row)
+        form.addRow("表情送信方式", fm)
+        self.face_mode_combo.currentIndexChanged.connect(self._on_face_send_mode_changed)
+        self.face_preset_random_chk.toggled.connect(self._on_face_send_mode_changed)
+        self._reload_face_preset_names(keep_selection=False)
+        self._on_face_send_mode_changed()
 
         net_row = QHBoxLayout()
         self.target_host_edit = QLineEdit()
@@ -688,6 +733,117 @@ class MainWindow(QMainWindow):
 
     def _on_sbv2_test_keep_face_toggled(self, checked: bool) -> None:
         self.sbv2_test_face_spin.setEnabled(not checked)
+
+    def _default_face_preset_json_path(self) -> Path:
+        kks_root_text = self.kks_root_edit.text().strip()
+        if kks_root_text:
+            root = Path(kks_root_text).expanduser()
+        else:
+            try:
+                root = PROJECT_ROOT.parents[2]
+            except Exception:
+                root = PROJECT_ROOT
+        return (root / "BepInEx" / "plugins" / "StudioFacePresetTool" / "StudioFacePresets.json").resolve()
+
+    def _reload_face_preset_names(self, *_args, keep_selection: bool = True) -> None:
+        combo = self.face_preset_name_combo
+        prev_data = combo.currentData() if keep_selection else None
+        prev_name = ""
+        prev_id = ""
+        if isinstance(prev_data, dict):
+            prev_name = str(prev_data.get("name", "")).strip()
+            prev_id = str(prev_data.get("id", "")).strip()
+
+        preset_path = self._default_face_preset_json_path()
+        rows: list[dict] = []
+        err = ""
+        try:
+            if preset_path.exists():
+                raw = json.loads(preset_path.read_text(encoding="utf-8"))
+                presets = raw.get("Presets", []) if isinstance(raw, dict) else []
+                if isinstance(presets, list):
+                    for entry in presets:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = str(entry.get("Name", "")).strip()
+                        preset_id = str(entry.get("Id", "")).strip()
+                        if name:
+                            rows.append({"name": name, "id": preset_id})
+            else:
+                err = f"not found: {preset_path}"
+        except Exception as exc:
+            err = str(exc)
+
+        self._face_preset_rows = rows
+        name_counts: dict[str, int] = {}
+        for row in rows:
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            name_counts[name] = int(name_counts.get(name, 0)) + 1
+
+        combo.blockSignals(True)
+        combo.clear()
+        if rows:
+            for row in rows:
+                name = str(row.get("name", "")).strip()
+                preset_id = str(row.get("id", "")).strip()
+                if not name:
+                    continue
+                if name_counts.get(name, 0) > 1 and preset_id:
+                    label = f"{name} ({preset_id[:8]})"
+                else:
+                    label = name
+                combo.addItem(label, {"name": name, "id": preset_id})
+        else:
+            combo.addItem("(FacePreset未検出)", {"name": "", "id": ""})
+        combo.blockSignals(False)
+
+        if keep_selection and (prev_name or prev_id):
+            self._select_face_preset(prev_name, prev_id)
+        elif rows:
+            combo.setCurrentIndex(0)
+        else:
+            combo.setCurrentIndex(0)
+
+        if hasattr(self, "log_text"):
+            if err:
+                self._append_log(f"[face-preset] load failed: {err}")
+            else:
+                self._append_log(f"[face-preset] loaded count={len(rows)} path={preset_path}")
+
+    def _select_face_preset(self, preset_name: str, preset_id: str = "") -> None:
+        combo = self.face_preset_name_combo
+        target_name = str(preset_name or "").strip()
+        target_id = str(preset_id or "").strip()
+        if combo.count() <= 0:
+            return
+        if not target_name and not target_id:
+            combo.setCurrentIndex(0)
+            return
+        for idx in range(combo.count()):
+            data = combo.itemData(idx)
+            if not isinstance(data, dict):
+                continue
+            row_name = str(data.get("name", "")).strip()
+            row_id = str(data.get("id", "")).strip()
+            if target_id and row_id and row_id == target_id:
+                combo.setCurrentIndex(idx)
+                return
+            if target_name and row_name == target_name:
+                combo.setCurrentIndex(idx)
+                return
+        combo.setCurrentIndex(0)
+
+    def _on_face_send_mode_changed(self, *_args) -> None:
+        mode = str(self.face_mode_combo.currentData() or self.face_mode_combo.currentText()).strip().lower()
+        use_preset_name = mode in ("preset_name", "preset_id")
+        random_enabled = bool(self.face_preset_random_chk.isChecked())
+        self.face_spin.setEnabled(not use_preset_name)
+        self.keep_face_chk.setEnabled(not use_preset_name)
+        self.face_preset_name_combo.setEnabled(use_preset_name and (not random_enabled))
+        self.face_preset_random_chk.setEnabled(use_preset_name)
+        self.face_preset_reload_btn.setEnabled(use_preset_name and (not random_enabled))
 
     def _on_sbv2_test_face_changed(self, value: int) -> None:
         if value >= 0 and self.sbv2_test_keep_face_chk.isChecked():
@@ -1095,7 +1251,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._append_log(f"[sbv2-test] temp run cleanup failed: {exc}")
 
-    def _run_sbv2_test_task(self, cfg: AppConfig, text: str, no_send_event: bool = False) -> dict:
+    def _run_sbv2_test_task(
+        self,
+        cfg: AppConfig,
+        text: str,
+        no_send_event: bool = False,
+        keep_current_face_override: Optional[bool] = None,
+        face_override: Optional[int] = None,
+    ) -> dict:
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
@@ -1127,12 +1290,38 @@ class MainWindow(QMainWindow):
             ])
             if cfg.target_token.strip():
                 cmd.extend(["--target-token", cfg.target_token.strip()])
-        if cfg.keep_current_face:
-            cmd.append("--keep-current-face")
-        elif cfg.face >= 0:
-            cmd.extend(["--face", str(cfg.face)])
+        face_send_mode = str(getattr(cfg, "face_send_mode", "game_preset") or "game_preset").strip().lower()
+        if face_send_mode not in ("game_preset", "preset_name", "preset_id"):
+            face_send_mode = "game_preset"
+        if face_send_mode == "preset_id":
+            face_send_mode = "preset_name"
+        cmd.extend(["--face-send-mode", face_send_mode])
+
+        if face_send_mode == "preset_name":
+            preset_name = str(getattr(cfg, "face_preset_name", "") or "").strip()
+            preset_id = str(getattr(cfg, "face_preset_id", "") or "").strip()
+            preset_random = bool(getattr(cfg, "face_preset_random", False))
+            if preset_random:
+                cmd.append("--face-preset-random")
+                preset_name = ""
+                preset_id = ""
+            if preset_name:
+                cmd.extend(["--face-preset-name", preset_name])
+            if preset_id:
+                cmd.extend(["--face-preset-id", preset_id])
+            if (not preset_random) and (not preset_name) and (not preset_id):
+                raise RuntimeError("face_send_mode=preset_name ですが face_preset_name が未設定です")
         else:
-            cmd.append("--keep-current-face")
+            effective_keep_current_face = (
+                bool(keep_current_face_override)
+                if keep_current_face_override is not None
+                else bool(cfg.keep_current_face)
+            )
+            effective_face = int(face_override) if face_override is not None else int(cfg.face)
+            if effective_keep_current_face:
+                cmd.append("--keep-current-face")
+            elif effective_face >= 0:
+                cmd.extend(["--face", str(effective_face)])
         if cfg.voice_volume >= 0:
             cmd.extend(["--voice-volume", str(cfg.voice_volume)])
         if cfg.voice_pitch >= 0:
@@ -1189,11 +1378,25 @@ class MainWindow(QMainWindow):
             self._append_log("[sbv2-test] active runtime config missing")
             return
 
+        test_keep_face = bool(self.sbv2_test_keep_face_chk.isChecked())
+        test_face = int(self.sbv2_test_face_spin.value())
+        face_send_mode = str(getattr(cfg, "face_send_mode", "game_preset") or "game_preset").strip().lower()
+        if face_send_mode not in ("game_preset", "preset_name", "preset_id"):
+            face_send_mode = "game_preset"
+        if face_send_mode == "preset_id":
+            face_send_mode = "preset_name"
+        face_preset_name = str(getattr(cfg, "face_preset_name", "") or "").strip()
+        face_preset_id = str(getattr(cfg, "face_preset_id", "") or "").strip()
+        face_preset_random = bool(getattr(cfg, "face_preset_random", False))
         target_host = cfg.target_host.strip() or "(pipe-local)"
         self._append_log(
             "[sbv2-test] use-sbv2-pre-step "
-            f"pipe={cfg.pipe_name} main={cfg.main_index} face={cfg.face} "
-            f"keep_face={cfg.keep_current_face} vol={cfg.voice_volume} pitch={cfg.voice_pitch} "
+            f"pipe={cfg.pipe_name} main={cfg.main_index} "
+            f"face_mode={face_send_mode} face_preset_name={face_preset_name or '(empty)'} "
+            f"face_preset_id={face_preset_id or '(empty)'} random={int(face_preset_random)} "
+            f"test_face={test_face} test_keep_face={test_keep_face} "
+            f"base_face={cfg.face} base_keep_face={cfg.keep_current_face} "
+            f"vol={cfg.voice_volume} pitch={cfg.voice_pitch} "
             f"target={target_host}:{cfg.target_port}{cfg.target_endpoint} "
             f"max_response_chars={cfg.max_response_chars} enabled={int(cfg.max_response_chars_enabled)}"
         )
@@ -1204,7 +1407,15 @@ class MainWindow(QMainWindow):
 
         self._sbv2_test_no_send = bool(no_send_event)
         self.sbv2_test_status_label.setText("送信前テスト実行中..." if no_send_event else "SBV2テスト実行中...")
-        self._sbv2_test_worker = _TaskWorker(lambda: self._run_sbv2_test_task(cfg, text, no_send_event))
+        self._sbv2_test_worker = _TaskWorker(
+            lambda: self._run_sbv2_test_task(
+                cfg,
+                text,
+                no_send_event,
+                keep_current_face_override=test_keep_face,
+                face_override=test_face,
+            )
+        )
         self._sbv2_test_worker.result_ready.connect(self._on_sbv2_test_done)
         self._sbv2_test_worker.error_occurred.connect(self._on_sbv2_test_error)
         self._sbv2_test_worker.start()
@@ -1225,6 +1436,21 @@ class MainWindow(QMainWindow):
         if truncated:
             self._append_log(f"[sbv2-test][grok-limit] truncated_chars={max(0, raw_len - capped_len)}")
         self._append_log(f"[sbv2-test][grok-limit] line_count={line_count}")
+        self._append_log(
+            "[sbv2-test][event-face] "
+            f"mode={str(data.get('event_face_send_mode', '') or '').strip() or '(unknown)'} "
+            f"sent={int(bool(data.get('event_sent', False)))} "
+            f"preset_name={str(data.get('event_face_preset_name', '') or '').strip() or '(empty)'} "
+            f"preset_id={str(data.get('event_face_preset_id', '') or '').strip() or '(empty)'} "
+            f"random={int(bool(data.get('event_face_preset_random', False)))} "
+            f"picked_name={str(data.get('event_face_selected_name', '') or '').strip() or '(empty)'} "
+            f"picked_id={str(data.get('event_face_selected_id', '') or '').strip() or '(empty)'} "
+            f"face={int(data.get('event_face', -1) or -1)} "
+            f"keep_current_face={int(bool(data.get('event_keep_current_face', False)))}"
+        )
+        event_stderr = str(data.get("event_stderr", "") or "").strip()
+        if event_stderr:
+            self._append_log(f"[sbv2-test][event-face][stderr] {event_stderr[:240]}")
         response_original = str(data.get("response_original", "")).strip()
         response_send = str(data.get("response", response_original)).strip()
         response_display = str(data.get("response_display", response_original)).strip()
@@ -1354,6 +1580,23 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(conv_sort_asc)
         tool_row.addWidget(conv_sort_desc)
         layout.addLayout(tool_row)
+
+        preset_row = QHBoxLayout()
+        self.conversion_preset_name_edit = QLineEdit()
+        self.conversion_preset_name_edit.setPlaceholderText("辞書プリセット名")
+        conversion_preset_save_btn = QPushButton("プリセット保存")
+        conversion_preset_save_btn.clicked.connect(self._save_dictionary_preset)
+        self.conversion_preset_combo = _NoWheelComboBox()
+        conversion_preset_apply_btn = QPushButton("適用")
+        conversion_preset_apply_btn.clicked.connect(self._apply_dictionary_preset_from_combo)
+        conversion_preset_del_btn = QPushButton("削除")
+        conversion_preset_del_btn.clicked.connect(self._delete_dictionary_preset)
+        preset_row.addWidget(self.conversion_preset_name_edit, 2)
+        preset_row.addWidget(conversion_preset_save_btn)
+        preset_row.addWidget(self.conversion_preset_combo, 2)
+        preset_row.addWidget(conversion_preset_apply_btn)
+        preset_row.addWidget(conversion_preset_del_btn)
+        layout.addLayout(preset_row)
 
         self.conversion_table = QTableWidget(0, 6)
         self.conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "SBV2送信用", "表示用", "表示適用", "登録順"])
@@ -1545,6 +1788,23 @@ class MainWindow(QMainWindow):
         tool_row.addWidget(trans_sort_asc)
         tool_row.addWidget(trans_sort_desc)
         layout.addLayout(tool_row)
+
+        preset_row = QHBoxLayout()
+        self.transcribe_preset_name_edit = QLineEdit()
+        self.transcribe_preset_name_edit.setPlaceholderText("文字起こしプリセット名")
+        transcribe_preset_save_btn = QPushButton("プリセット保存")
+        transcribe_preset_save_btn.clicked.connect(self._save_transcribe_conversion_preset)
+        self.transcribe_preset_combo = _NoWheelComboBox()
+        transcribe_preset_apply_btn = QPushButton("適用")
+        transcribe_preset_apply_btn.clicked.connect(self._apply_transcribe_conversion_preset_from_combo)
+        transcribe_preset_del_btn = QPushButton("削除")
+        transcribe_preset_del_btn.clicked.connect(self._delete_transcribe_conversion_preset)
+        preset_row.addWidget(self.transcribe_preset_name_edit, 2)
+        preset_row.addWidget(transcribe_preset_save_btn)
+        preset_row.addWidget(self.transcribe_preset_combo, 2)
+        preset_row.addWidget(transcribe_preset_apply_btn)
+        preset_row.addWidget(transcribe_preset_del_btn)
+        layout.addLayout(preset_row)
 
         self.transcribe_conversion_table = QTableWidget(0, 6)
         self.transcribe_conversion_table.setHorizontalHeaderLabels(["有効", "変換前", "Grok送信用", "表示用", "表示適用", "登録順"])
@@ -2361,6 +2621,7 @@ class MainWindow(QMainWindow):
 
         # パイプライン設定
         self.kks_root_edit.textChanged.connect(self._on_any_setting_changed)
+        self.kks_root_edit.editingFinished.connect(self._reload_face_preset_names)
         self.output_dir_edit.textChanged.connect(self._on_any_setting_changed)
         self.save_faster_text_chk.toggled.connect(self._on_any_setting_changed)
         self.save_source_wav_chk.toggled.connect(self._on_any_setting_changed)
@@ -2391,6 +2652,9 @@ class MainWindow(QMainWindow):
         self.main_spin.valueChanged.connect(self._on_any_setting_changed)
         self.face_spin.valueChanged.connect(self._on_any_setting_changed)
         self.keep_face_chk.toggled.connect(self._on_any_setting_changed)
+        self.face_mode_combo.currentTextChanged.connect(self._on_any_setting_changed)
+        self.face_preset_name_combo.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.face_preset_random_chk.toggled.connect(self._on_any_setting_changed)
         self.target_host_edit.textChanged.connect(self._on_any_setting_changed)
         self.target_port_spin.valueChanged.connect(self._on_any_setting_changed)
         self.target_endpoint_edit.textChanged.connect(self._on_any_setting_changed)
@@ -2502,6 +2766,319 @@ class MainWindow(QMainWindow):
             self._model_presets.pop(idx)
             self._refresh_preset_ui()
             self._save_config()
+
+    # ---- 文字変換プリセット ----
+
+    @staticmethod
+    def _table_order_index(item: Optional[QTableWidgetItem], fallback: int) -> int:
+        if item is None:
+            return max(0, int(fallback))
+        try:
+            return max(0, int((item.text() or "").strip()))
+        except Exception:
+            return max(0, int(fallback))
+
+    def _load_conversion_presets(self) -> None:
+        try:
+            self._transcribe_conversion_presets = _load_presets_impl(
+                TRANSCRIPTION_PRESETS_FILE,
+                kind="transcription",
+            )
+            self._dictionary_presets = _load_presets_impl(
+                DICTIONARY_PRESETS_FILE,
+                kind="dictionary",
+            )
+            active = _load_active_presets_impl(ACTIVE_PRESETS_FILE)
+            self._active_transcribe_preset_id = str(active.get("transcriptionPresetId", "")).strip()
+            self._active_dictionary_preset_id = str(active.get("dictionaryPresetId", "")).strip()
+        except Exception as exc:
+            self._transcribe_conversion_presets = []
+            self._dictionary_presets = []
+            self._active_transcribe_preset_id = ""
+            self._active_dictionary_preset_id = ""
+            self._append_log(f"[preset] 読み込み失敗: {exc}")
+        self._refresh_transcribe_conversion_preset_ui()
+        self._refresh_dictionary_preset_ui()
+
+    def _save_conversion_presets(self) -> None:
+        try:
+            _save_presets_impl(TRANSCRIPTION_PRESETS_FILE, self._transcribe_conversion_presets)
+            _save_presets_impl(DICTIONARY_PRESETS_FILE, self._dictionary_presets)
+            _save_active_presets_impl(
+                ACTIVE_PRESETS_FILE,
+                transcription_preset_id=self._active_transcribe_preset_id,
+                dictionary_preset_id=self._active_dictionary_preset_id,
+            )
+        except Exception as exc:
+            self._append_log(f"[preset] 保存失敗: {exc}")
+
+    def _refresh_transcribe_conversion_preset_ui(self) -> None:
+        combo = getattr(self, "transcribe_preset_combo", None)
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        selected_index = -1
+        for preset in self._transcribe_conversion_presets:
+            name = str(preset.get("name", "")).strip()
+            preset_id = str(preset.get("id", "")).strip()
+            if not name or not preset_id:
+                continue
+            combo.addItem(name, preset_id)
+            if preset_id == self._active_transcribe_preset_id:
+                selected_index = combo.count() - 1
+        if selected_index >= 0:
+            combo.setCurrentIndex(selected_index)
+        combo.blockSignals(False)
+
+    def _refresh_dictionary_preset_ui(self) -> None:
+        combo = getattr(self, "conversion_preset_combo", None)
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        selected_index = -1
+        for preset in self._dictionary_presets:
+            name = str(preset.get("name", "")).strip()
+            preset_id = str(preset.get("id", "")).strip()
+            if not name or not preset_id:
+                continue
+            combo.addItem(name, preset_id)
+            if preset_id == self._active_dictionary_preset_id:
+                selected_index = combo.count() - 1
+        if selected_index >= 0:
+            combo.setCurrentIndex(selected_index)
+        combo.blockSignals(False)
+
+    def _collect_transcribe_conversion_entries(self) -> list[dict]:
+        entries: list[dict] = []
+        table = self.transcribe_conversion_table
+        for row in range(table.rowCount()):
+            enabled_item = table.item(row, 0)
+            from_item = table.item(row, 1)
+            grok_to_item = table.item(row, 2)
+            display_to_item = table.item(row, 3)
+            display_item = table.item(row, 4)
+            order_item = table.item(row, 5)
+            from_text = (from_item.text() if from_item else "").strip()
+            if not from_text:
+                continue
+            entries.append(
+                {
+                    "enabled": bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked),
+                    "from": from_text,
+                    "to_grok": (grok_to_item.text() if grok_to_item else "").strip(),
+                    "to_display": (display_to_item.text() if display_to_item else "").strip(),
+                    "display_apply": bool(display_item and display_item.checkState() == Qt.CheckState.Checked),
+                    "order_index": self._table_order_index(order_item, row),
+                }
+            )
+        return _normalize_transcription_entries(entries)
+
+    def _collect_dictionary_entries(self) -> list[dict]:
+        entries: list[dict] = []
+        table = self.conversion_table
+        for row in range(table.rowCount()):
+            enabled_item = table.item(row, 0)
+            from_item = table.item(row, 1)
+            sbv2_to_item = table.item(row, 2)
+            display_to_item = table.item(row, 3)
+            display_item = table.item(row, 4)
+            order_item = table.item(row, 5)
+            from_text = (from_item.text() if from_item else "").strip()
+            if not from_text:
+                continue
+            entries.append(
+                {
+                    "enabled": bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked),
+                    "from": from_text,
+                    "to_sbv2": (sbv2_to_item.text() if sbv2_to_item else "").strip(),
+                    "to_display": (display_to_item.text() if display_to_item else "").strip(),
+                    "display_apply": bool(display_item and display_item.checkState() == Qt.CheckState.Checked),
+                    "order_index": self._table_order_index(order_item, row),
+                }
+            )
+        return _normalize_dictionary_entries(entries)
+
+    def _replace_transcribe_conversion_entries(self, entries: list[dict], *, notify: bool) -> None:
+        normalized_entries = _normalize_transcription_entries(entries)
+        was_loading = self._loading_config
+        self._loading_config = True
+        try:
+            self._transcribe_conversion_order_seq = 0
+            self.transcribe_conversion_table.setRowCount(0)
+            for entry in normalized_entries:
+                self._transcribe_conv_add_row(
+                    from_text=str(entry.get("from", "")),
+                    to_grok=str(entry.get("to_grok", "")),
+                    to_display=str(entry.get("to_display", "")),
+                    display_apply=bool(entry.get("display_apply", True)),
+                    enabled=bool(entry.get("enabled", True)),
+                    order_index=int(entry.get("order_index", 0)),
+                    start_edit=False,
+                )
+        finally:
+            self._loading_config = was_loading
+        self._apply_transcribe_conversion_table_search()
+        if notify:
+            self._on_any_setting_changed()
+
+    def _replace_dictionary_entries(self, entries: list[dict], *, notify: bool) -> None:
+        normalized_entries = _normalize_dictionary_entries(entries)
+        was_loading = self._loading_config
+        self._loading_config = True
+        try:
+            self._conversion_order_seq = 0
+            self.conversion_table.setRowCount(0)
+            for entry in normalized_entries:
+                self._conv_add_row(
+                    from_text=str(entry.get("from", "")),
+                    to_sbv2=str(entry.get("to_sbv2", "")),
+                    to_display=str(entry.get("to_display", "")),
+                    display_apply=bool(entry.get("display_apply", False)),
+                    enabled=bool(entry.get("enabled", True)),
+                    order_index=int(entry.get("order_index", 0)),
+                    start_edit=False,
+                )
+        finally:
+            self._loading_config = was_loading
+        self._apply_conversion_table_search()
+        if notify:
+            self._on_any_setting_changed()
+
+    def _save_transcribe_conversion_preset(self) -> None:
+        name = self.transcribe_preset_name_edit.text().strip()
+        if not name:
+            return
+        entries = self._collect_transcribe_conversion_entries()
+        now = _now_iso8601()
+
+        matched_index = -1
+        for index, preset in enumerate(self._transcribe_conversion_presets):
+            if str(preset.get("name", "")).strip() == name:
+                matched_index = index
+                break
+
+        if matched_index >= 0:
+            preset = dict(self._transcribe_conversion_presets[matched_index])
+            preset_id = str(preset.get("id", "")).strip() or _new_preset_id("tr")
+            preset["id"] = preset_id
+            preset["name"] = name
+            preset["createdAt"] = str(preset.get("createdAt", "")).strip() or now
+            preset["updatedAt"] = now
+            preset["entries"] = entries
+            self._transcribe_conversion_presets[matched_index] = preset
+        else:
+            preset_id = _new_preset_id("tr")
+            self._transcribe_conversion_presets.append(
+                {
+                    "id": preset_id,
+                    "name": name,
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "entries": entries,
+                }
+            )
+
+        self._active_transcribe_preset_id = preset_id
+        self._save_conversion_presets()
+        self._refresh_transcribe_conversion_preset_ui()
+        self._append_log(f"[preset] 文字起こし変換プリセット保存 → {name}")
+
+    def _apply_transcribe_conversion_preset_from_combo(self) -> None:
+        self._apply_transcribe_conversion_preset(self.transcribe_preset_combo.currentIndex())
+
+    def _apply_transcribe_conversion_preset(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._transcribe_conversion_presets):
+            return
+        preset = self._transcribe_conversion_presets[idx]
+        preset_id = str(preset.get("id", "")).strip()
+        name = str(preset.get("name", f"({idx + 1})"))
+        self._replace_transcribe_conversion_entries(preset.get("entries", []), notify=True)
+        self._active_transcribe_preset_id = preset_id
+        self._save_conversion_presets()
+        self._refresh_transcribe_conversion_preset_ui()
+        self._append_log(f"[preset] 文字起こし変換適用 → {name}")
+
+    def _delete_transcribe_conversion_preset(self) -> None:
+        idx = self.transcribe_preset_combo.currentIndex()
+        if idx < 0 or idx >= len(self._transcribe_conversion_presets):
+            return
+        removed = self._transcribe_conversion_presets.pop(idx)
+        removed_id = str(removed.get("id", "")).strip()
+        name = str(removed.get("name", f"({idx + 1})"))
+        if removed_id and removed_id == self._active_transcribe_preset_id:
+            self._active_transcribe_preset_id = ""
+        self._save_conversion_presets()
+        self._refresh_transcribe_conversion_preset_ui()
+        self._append_log(f"[preset] 文字起こし変換プリセット削除 → {name}")
+
+    def _save_dictionary_preset(self) -> None:
+        name = self.conversion_preset_name_edit.text().strip()
+        if not name:
+            return
+        entries = self._collect_dictionary_entries()
+        now = _now_iso8601()
+
+        matched_index = -1
+        for index, preset in enumerate(self._dictionary_presets):
+            if str(preset.get("name", "")).strip() == name:
+                matched_index = index
+                break
+
+        if matched_index >= 0:
+            preset = dict(self._dictionary_presets[matched_index])
+            preset_id = str(preset.get("id", "")).strip() or _new_preset_id("dc")
+            preset["id"] = preset_id
+            preset["name"] = name
+            preset["createdAt"] = str(preset.get("createdAt", "")).strip() or now
+            preset["updatedAt"] = now
+            preset["entries"] = entries
+            self._dictionary_presets[matched_index] = preset
+        else:
+            preset_id = _new_preset_id("dc")
+            self._dictionary_presets.append(
+                {
+                    "id": preset_id,
+                    "name": name,
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "entries": entries,
+                }
+            )
+
+        self._active_dictionary_preset_id = preset_id
+        self._save_conversion_presets()
+        self._refresh_dictionary_preset_ui()
+        self._append_log(f"[preset] 変換辞書プリセット保存 → {name}")
+
+    def _apply_dictionary_preset_from_combo(self) -> None:
+        self._apply_dictionary_preset(self.conversion_preset_combo.currentIndex())
+
+    def _apply_dictionary_preset(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._dictionary_presets):
+            return
+        preset = self._dictionary_presets[idx]
+        preset_id = str(preset.get("id", "")).strip()
+        name = str(preset.get("name", f"({idx + 1})"))
+        self._replace_dictionary_entries(preset.get("entries", []), notify=True)
+        self._active_dictionary_preset_id = preset_id
+        self._save_conversion_presets()
+        self._refresh_dictionary_preset_ui()
+        self._append_log(f"[preset] 変換辞書適用 → {name}")
+
+    def _delete_dictionary_preset(self) -> None:
+        idx = self.conversion_preset_combo.currentIndex()
+        if idx < 0 or idx >= len(self._dictionary_presets):
+            return
+        removed = self._dictionary_presets.pop(idx)
+        removed_id = str(removed.get("id", "")).strip()
+        name = str(removed.get("name", f"({idx + 1})"))
+        if removed_id and removed_id == self._active_dictionary_preset_id:
+            self._active_dictionary_preset_id = ""
+        self._save_conversion_presets()
+        self._refresh_dictionary_preset_ui()
+        self._append_log(f"[preset] 変換辞書プリセット削除 → {name}")
 
     # ---- イベントハンドラ ----
 
@@ -2689,7 +3266,7 @@ class MainWindow(QMainWindow):
         text = self.manual_combo.currentText().strip()
         if not self._send_text_to_pipeline(text, "手動"):
             return
-        self.manual_combo.lineEdit().clear()
+        self._reset_manual_input()
 
     def _send_text_to_pipeline(self, text: str, source_label: str) -> bool:
         text = str(text or "").strip()
@@ -2714,6 +3291,18 @@ class MainWindow(QMainWindow):
         self.manual_combo.insertItem(0, text)
         while self.manual_combo.count() > 50:
             self.manual_combo.removeItem(self.manual_combo.count() - 1)
+        self._reset_manual_input()
+
+    def _reset_manual_input(self) -> None:
+        combo = self.manual_combo
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(-1)
+            line_edit = combo.lineEdit()
+            if line_edit is not None:
+                line_edit.clear()
+        finally:
+            combo.blockSignals(False)
 
     def _on_pipeline_error(self, stack: str) -> None:
         self._append_log("[error] パイプライン例外")

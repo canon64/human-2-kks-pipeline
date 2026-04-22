@@ -52,6 +52,10 @@ class AppConfig:
     main_index: int
     face: int
     keep_current_face: bool
+    face_send_mode: str
+    face_preset_id: str
+    face_preset_name: str
+    face_preset_random: bool
     source_mode: str
     external_text_enabled: bool
     external_text_host: str
@@ -60,7 +64,7 @@ class AppConfig:
     external_text_token: str
     external_text_dedupe_max: int
     max_response_chars_enabled: bool = True
-    max_response_chars: int = 1200
+    max_response_chars: int = 600
     transcribe_server_port: int = 18760
     video_metadata_path: Optional[Path] = None
     sbv2_server_url: str = "http://127.0.0.1:5000"

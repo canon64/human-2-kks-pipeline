@@ -75,6 +75,15 @@ def _parse_bool(value: Any) -> bool:
     return False
 
 
+def _normalize_face_send_mode(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if token == "preset_id":
+        return "preset_name"
+    if token in {"game_preset", "preset_name"}:
+        return token
+    return "game_preset"
+
+
 def _apply_conversion_rules(
     response: str,
     rules: list[dict[str, Any]],
@@ -368,7 +377,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--text", default="", help="Text to send to Grok.")
     parser.add_argument("--response-text", default="", help="Use this as Grok response directly (skip Grok).")
-    parser.add_argument("--max-response-chars", type=int, default=1200, help="Maximum Grok response characters to process. Set 0 to disable limit.")
+    parser.add_argument("--max-response-chars", type=int, default=600, help="Maximum Grok response characters to process. Set 0 to disable limit.")
     parser.add_argument("--port", type=int, default=None, help="Chrome debug port (default from config).")
     parser.add_argument("--config", default=None, help="Grok bridge config path.")
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
@@ -423,6 +432,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--main", type=int, default=0, help="Main index for event payload.")
     parser.add_argument("--face", type=int, default=-1, help="Face id for event payload. -1 to keep default behavior.")
     parser.add_argument("--keep-current-face", action="store_true", help="Send keepCurrentFace flag with event.")
+    parser.add_argument(
+        "--face-send-mode",
+        default="game_preset",
+        choices=["game_preset", "preset_name", "preset_id"],
+        help="Face send mode. game_preset=keep/face, preset_name=facePresetName/preset random, preset_id=legacy alias.",
+    )
+    parser.add_argument("--face-preset-id", default="", help="FacePresetTool preset id (legacy/fallback).")
+    parser.add_argument("--face-preset-name", default="", help="FacePresetTool preset name to send when face-send-mode=preset_name.")
+    parser.add_argument("--face-preset-random", action="store_true", help="Attach random flag when face-send-mode=preset_name.")
     parser.add_argument("--no-send-event", action="store_true", help="Do not send KKS event after wav merge.")
     parser.add_argument(
         "--conversion-json",
@@ -629,6 +647,14 @@ def main() -> int:
         event_stdout = ""
         event_stderr = ""
         event_sent = False
+        event_face_send_mode = _normalize_face_send_mode(args.face_send_mode)
+        event_face_preset_id = str(args.face_preset_id or "").strip()
+        event_face_preset_name = str(args.face_preset_name or "").strip()
+        event_face_preset_random = bool(args.face_preset_random)
+        event_face = int(args.face)
+        event_keep_current_face = bool(args.keep_current_face)
+        event_face_selected_name = event_face_preset_name
+        event_face_selected_id = event_face_preset_id
         if not args.no_send_event:
             sender_path = Path(args.event_sender).resolve()
             if not sender_path.exists():
@@ -647,6 +673,19 @@ def main() -> int:
                 "-AudioPath",
                 str(merged_wav_path),
             ]
+            logger.info(
+                "event_send_start mode=%s preset_name=%s preset_id=%s random=%d face=%d keep_current_face=%d remote_http=%d host=%s port=%d endpoint=%s",
+                event_face_send_mode,
+                event_face_preset_name or "(empty)",
+                event_face_preset_id or "(empty)",
+                int(event_face_preset_random),
+                event_face,
+                int(event_keep_current_face),
+                int(bool(args.remote_http)),
+                str(args.target_host or "").strip() or "(pipe-local)",
+                int(args.target_port),
+                args.target_endpoint,
+            )
             if args.remote_http or args.target_host.strip():
                 event_command.append("-RemoteHttp")
             if args.target_host.strip():
@@ -655,19 +694,49 @@ def main() -> int:
                 event_command.extend(["-TargetEndpoint", args.target_endpoint])
                 if args.target_token.strip():
                     event_command.extend(["-TargetToken", args.target_token.strip()])
-            if args.face >= 0:
-                event_command.extend(["-Face", str(args.face)])
-            if args.keep_current_face:
-                event_command.append("-KeepCurrentFace")
+            if event_face_send_mode == "preset_name":
+                if event_face_preset_random:
+                    event_command.append("-FacePresetRandom")
+                if event_face_preset_name:
+                    event_command.extend(["-FacePresetName", event_face_preset_name])
+                    event_face_selected_name = event_face_preset_name
+                if event_face_preset_id:
+                    event_command.extend(["-FacePresetId", event_face_preset_id])
+                    event_face_selected_id = event_face_preset_id
+                if (not event_face_preset_random) and (not event_face_preset_name) and (not event_face_preset_id):
+                    raise RuntimeError("face_send_mode=preset_name but face_preset_name is empty")
+            else:
+                if event_face >= 0:
+                    event_command.extend(["-Face", str(event_face)])
+                if event_keep_current_face:
+                    event_command.append("-KeepCurrentFace")
             if args.voice_volume >= 0:
                 event_command.extend(["-Volume", str(args.voice_volume)])
             if args.voice_pitch >= 0:
                 event_command.extend(["-Pitch", str(args.voice_pitch)])
 
-            event_result = _run_subprocess(event_command)
-            event_stdout = event_result.stdout
-            event_stderr = event_result.stderr
-            event_sent = True
+            try:
+                event_result = _run_subprocess(event_command)
+                event_stdout = event_result.stdout
+                event_stderr = event_result.stderr
+                event_sent = True
+                logger.info(
+                    "event_send_result status=ok mode=%s stdout_len=%d stderr_len=%d",
+                    event_face_send_mode,
+                    len(event_stdout or ""),
+                    len(event_stderr or ""),
+                )
+            except subprocess.CalledProcessError as exc:
+                event_stdout = str(exc.stdout or "")
+                event_stderr = str(exc.stderr or "")
+                logger.error(
+                    "event_send_result status=ng mode=%s returncode=%s stdout=%r stderr=%r",
+                    event_face_send_mode,
+                    str(exc.returncode),
+                    event_stdout[:240],
+                    event_stderr[:240],
+                )
+                raise RuntimeError(f"event sender failed returncode={exc.returncode}") from exc
 
         _print_json(
             {
@@ -688,6 +757,14 @@ def main() -> int:
                 "event_sent": event_sent,
                 "event_stdout": event_stdout,
                 "event_stderr": event_stderr,
+                "event_face_send_mode": event_face_send_mode,
+                "event_face_preset_name": event_face_preset_name,
+                "event_face_preset_id": event_face_preset_id,
+                "event_face_preset_random": event_face_preset_random,
+                "event_face_selected_name": event_face_selected_name,
+                "event_face_selected_id": event_face_selected_id,
+                "event_face": event_face,
+                "event_keep_current_face": event_keep_current_face,
                 "model_name": args.model_name,
                 "model_file": model_file_name,
             }
@@ -714,6 +791,14 @@ def main() -> int:
                 "event_sent": False,
                 "event_stdout": "",
                 "event_stderr": "",
+                "event_face_send_mode": _normalize_face_send_mode(args.face_send_mode),
+                "event_face_preset_name": str(args.face_preset_name or "").strip(),
+                "event_face_preset_id": str(args.face_preset_id or "").strip(),
+                "event_face_preset_random": bool(args.face_preset_random),
+                "event_face_selected_name": "",
+                "event_face_selected_id": "",
+                "event_face": int(args.face),
+                "event_keep_current_face": bool(args.keep_current_face),
                 "model_name": args.model_name,
                 "model_file": args.model_file,
             }
