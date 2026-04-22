@@ -22,7 +22,7 @@ param(
     [switch]$Stop,
     [switch]$Interactive,
     [switch]$NoSend,
-    [int]$ConnectTimeoutMs = 2000
+    [int]$ConnectTimeoutMs = 10000
 )
 
 Set-StrictMode -Version Latest
