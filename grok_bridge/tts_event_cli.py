@@ -120,6 +120,16 @@ def _normalize_face_send_mode(value: Any) -> str:
     return "game_preset"
 
 
+def _normalize_pipe_name(value: Any) -> str:
+    pipe_name = str(value or "").strip()
+    prefix = "\\\\.\\pipe\\"
+    if pipe_name.lower().startswith(prefix.lower()):
+        pipe_name = pipe_name[len(prefix) :].strip()
+    if not pipe_name or pipe_name.lower() == "kks_voice_face_events_diag_0423":
+        return "kks_voice_face_events"
+    return pipe_name
+
+
 def _apply_conversion_rules(
     response: str,
     rules: list[dict[str, Any]],
@@ -548,6 +558,8 @@ def main() -> int:
 
         if not args.list_models and not args.text.strip() and not args.response_text.strip():
             raise RuntimeError("--text or --response-text is required unless --list-models is used.")
+
+        args.pipe_name = _normalize_pipe_name(args.pipe_name)
 
         if args.response_text.strip():
             source = "response-text"

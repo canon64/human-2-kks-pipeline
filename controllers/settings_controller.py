@@ -8,6 +8,9 @@ from PyQt6.QtCore import Qt
 
 from config.models import AppConfig
 
+DEFAULT_PIPE_NAME = "kks_voice_face_events"
+LEGACY_DIAGNOSTIC_PIPE_NAMES = {"kks_voice_face_events_diag_0423"}
+
 
 def _load_config_json(config_file: Path) -> dict:
     if not config_file.exists():
@@ -63,6 +66,16 @@ def _normalize_sbv2_mode(value: object, default: str = "auto") -> str:
     if token in ("auto", "http", "local"):
         return token
     return default
+
+
+def normalize_pipe_name(value: object, default: str = DEFAULT_PIPE_NAME) -> str:
+    pipe_name = str(value or "").strip()
+    prefix = "\\\\.\\pipe\\"
+    if pipe_name.lower().startswith(prefix.lower()):
+        pipe_name = pipe_name[len(prefix) :].strip()
+    if not pipe_name or pipe_name.lower() in LEGACY_DIAGNOSTIC_PIPE_NAMES:
+        return default
+    return pipe_name
 
 
 def build_config(window, *, config_file: Path, default_source_mode: str) -> AppConfig:
@@ -167,7 +180,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         sbv2_length=float(window.length_spin.value()),
         voice_volume=float(window.voice_volume_spin.value()),
         voice_pitch=float(window.voice_pitch_spin.value()),
-        pipe_name=window.pipe_edit.text().strip() or "kks_voice_face_events",
+        pipe_name=normalize_pipe_name(window.pipe_edit.text()),
         target_host=window.target_host_edit.text().strip(),
         target_port=int(window.target_port_spin.value()),
         target_endpoint=window.target_endpoint_edit.text().strip() or "/voice-face-event",
@@ -363,7 +376,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.length_spin.setValue(f("sbv2_length", window.length_spin.value()))
         window.voice_volume_spin.setValue(f("voice_volume", window.voice_volume_spin.value()))
         window.voice_pitch_spin.setValue(f("voice_pitch", window.voice_pitch_spin.value()))
-        window.pipe_edit.setText(s("pipe_name", window.pipe_edit.text()))
+        window.pipe_edit.setText(normalize_pipe_name(s("pipe_name", window.pipe_edit.text())))
         window.target_host_edit.setText(s("target_host", window.target_host_edit.text()))
         window.target_port_spin.setValue(i("target_port", window.target_port_spin.value()))
         window.target_endpoint_edit.setText(s("target_endpoint", window.target_endpoint_edit.text()))

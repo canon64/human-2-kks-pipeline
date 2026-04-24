@@ -35,6 +35,30 @@ catch {
     # On newer PowerShell editions this assembly is already loaded.
 }
 
+function Normalize-PipeName([string]$rawPipeName) {
+    if ([string]::IsNullOrWhiteSpace($rawPipeName)) {
+        return "kks_voice_face_events"
+    }
+
+    $value = $rawPipeName.Trim()
+    $prefix = "\\.\pipe\"
+    if ($value.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $value = $value.Substring($prefix.Length).Trim()
+    }
+
+    if ($value.Equals("kks_voice_face_events_diag_0423", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "kks_voice_face_events"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return "kks_voice_face_events"
+    }
+
+    return $value
+}
+
+$PipeName = Normalize-PipeName $PipeName
+
 function Parse-Faces([string]$rawFaces) {
     $items = @()
     if ([string]::IsNullOrWhiteSpace($rawFaces)) {
