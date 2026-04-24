@@ -164,7 +164,12 @@ function Send-PipeLine([string]$pipeName, [string]$line, [int]$timeoutMs) {
             $writer.WriteLine($line)
         }
         finally {
-            $writer.Dispose()
+            try {
+                $writer.Dispose()
+            }
+            catch [System.IO.IOException] {
+                # Receiver may close immediately after reading the line.
+            }
         }
     }
     finally {
