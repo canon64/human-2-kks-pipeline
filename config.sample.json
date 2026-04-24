@@ -54,7 +54,7 @@
   "external_text_token": "",
   "external_text_dedupe_max": 1024,
   "max_response_chars_enabled": true,
-  "max_response_chars": 600,
+  "max_response_chars": 3000,
   "transcribe_server_port": 18760,
   "diagnostic_log_enabled": false,
   "diagnostic_log_interval_ms": 1000,

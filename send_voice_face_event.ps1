@@ -1,6 +1,7 @@
 param(
     [string]$PipeName = "kks_voice_face_events",
     [string]$Json = "",
+    [string]$JsonFile = "",
     [string]$TargetHost = "",
     [int]$TargetPort = 18765,
     [string]$TargetEndpoint = "/voice-face-event",
@@ -385,6 +386,13 @@ if ($Interactive) {
 }
 
 $lineToSend = $Json
+if (-not [string]::IsNullOrWhiteSpace($JsonFile)) {
+    $resolvedJsonFile = [System.IO.Path]::GetFullPath($JsonFile)
+    if (-not [System.IO.File]::Exists($resolvedJsonFile)) {
+        throw "JsonFile not found: $resolvedJsonFile"
+    }
+    $lineToSend = [System.IO.File]::ReadAllText($resolvedJsonFile, [System.Text.Encoding]::UTF8).Trim()
+}
 if ([string]::IsNullOrWhiteSpace($lineToSend)) {
     if ($Stop) {
         $lineToSend = '{"type":"stop"}'

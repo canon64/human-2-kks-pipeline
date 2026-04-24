@@ -536,8 +536,20 @@ class WavWatchTranscriber:
                 self._log(f"[error] pipeline failed: {(result.stderr or result.stdout or '').strip()[:200]}")
             else:
                 self._log(f"[tts] done")
-                # 女の字幕: TTS完了直後に送信
-                _send_subtitle(response_text, "StackFemale")
+                payload = {}
+                for line in reversed((result.stdout or "").splitlines()):
+                    try:
+                        candidate = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(candidate, dict):
+                        payload = candidate
+                        break
+                if payload.get("sequence_sent"):
+                    self._log("[subtitle] line subtitles are handled by VoiceFaceEventBridge sequence playback")
+                else:
+                    # 女の字幕: TTS完了直後に送信
+                    _send_subtitle(response_text, "StackFemale")
         except Exception as exc:
             self._log(f"[error] TTS pipeline failed: {exc}")
 

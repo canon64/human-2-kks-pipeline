@@ -23,13 +23,49 @@ def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False))
 
 
-def _split_response_lines(response: str) -> list[str]:
+def _split_long_line(line: str, max_chars: int) -> list[str]:
+    text = (line or "").strip()
+    if not text:
+        return []
+
+    limit = max(1, int(max_chars))
+    if len(text) <= limit:
+        return [text]
+
+    break_chars = "。！？!?、,，；;：:」』）)] "
+    min_break = max(1, int(limit * 0.45))
+    chunks: list[str] = []
+    rest = text
+    while len(rest) > limit:
+        cut = 0
+        scan_to = min(limit, len(rest) - 1)
+        for idx in range(scan_to, min_break - 1, -1):
+            if rest[idx - 1] in break_chars:
+                cut = idx
+                break
+        if cut <= 0:
+            cut = limit
+        chunk = rest[:cut].strip()
+        if chunk:
+            chunks.append(chunk)
+        rest = rest[cut:].strip()
+    if rest:
+        chunks.append(rest)
+    return chunks
+
+
+def _split_response_lines(response: str, max_line_chars: int = 0) -> list[str]:
     lines = [(line or "").strip() for line in response.splitlines()]
     lines = [line for line in lines if line]
-    if lines:
-        return lines
-    compact = (response or "").strip()
-    return [compact] if compact else []
+    if not lines:
+        compact = (response or "").strip()
+        lines = [compact] if compact else []
+    if max_line_chars and max_line_chars > 0:
+        split_lines: list[str] = []
+        for line in lines:
+            split_lines.extend(_split_long_line(line, max_line_chars))
+        return split_lines
+    return lines
 
 
 def _limit_response_text(
@@ -318,6 +354,19 @@ def _concat_wavs(input_paths: list[Path], output_path: Path, gap_ms: int) -> Non
                 out_wav.writeframes(silence)
 
 
+def _wav_duration_sec(path: Path) -> float:
+    with wave.open(str(path), "rb") as wav_file:
+        frames = wav_file.getnframes()
+        rate = wav_file.getframerate()
+        if rate <= 0:
+            return 0.0
+        return frames / float(rate)
+
+
+def _round3(value: float) -> float:
+    return round(float(value), 3)
+
+
 def _run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -377,7 +426,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--text", default="", help="Text to send to Grok.")
     parser.add_argument("--response-text", default="", help="Use this as Grok response directly (skip Grok).")
-    parser.add_argument("--max-response-chars", type=int, default=600, help="Maximum Grok response characters to process. Set 0 to disable limit.")
+    parser.add_argument("--max-response-chars", type=int, default=3000, help="Maximum Grok response characters to process. Set 0 to disable limit.")
     parser.add_argument("--port", type=int, default=None, help="Chrome debug port (default from config).")
     parser.add_argument("--config", default=None, help="Grok bridge config path.")
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
@@ -414,6 +463,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Output base directory (relative to GROK_BRIDGE_HOME/runtime dir or absolute).",
     )
     parser.add_argument("--line-gap-ms", type=int, default=300, help="Gap milliseconds between merged line wavs.")
+    parser.add_argument("--max-line-chars", type=int, default=280, help="Split long response lines around punctuation before TTS. 0 disables.")
     parser.add_argument("--voice-volume", type=float, default=-1.0, help="External voice playback volume (0-1, -1=bridge default).")
     parser.add_argument("--voice-pitch", type=float, default=-1.0, help="External voice playback pitch (0.1-3, -1=bridge default).")
 
@@ -441,6 +491,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--face-preset-id", default="", help="FacePresetTool preset id (legacy/fallback).")
     parser.add_argument("--face-preset-name", default="", help="FacePresetTool preset name to send when face-send-mode=preset_name.")
     parser.add_argument("--face-preset-random", action="store_true", help="Attach random flag when face-send-mode=preset_name.")
+    parser.add_argument(
+        "--event-send-mode",
+        default="sequence",
+        choices=["sequence", "merged"],
+        help="sequence sends line wavs one by one; merged keeps legacy merged.wav behavior.",
+    )
     parser.add_argument("--no-send-event", action="store_true", help="Do not send KKS event after wav merge.")
     parser.add_argument(
         "--conversion-json",
@@ -537,14 +593,24 @@ def main() -> int:
             logger=logger,
         )
 
-        lines = _split_response_lines(response)
+        max_line_chars = max(0, int(args.max_line_chars or 0))
+        lines = _split_response_lines(response, max_line_chars=max_line_chars)
+        display_lines = _split_response_lines(response_display, max_line_chars=max_line_chars)
+        if len(display_lines) != len(lines):
+            logger.warning(
+                "display_line_count_mismatch send_lines=%d display_lines=%d fallback=send_lines",
+                len(lines),
+                len(display_lines),
+            )
+            display_lines = list(lines)
         logger.info(
-            "grok_response_processed raw_len=%d capped_len=%d send_len=%d display_len=%d line_count=%d",
+            "grok_response_processed raw_len=%d capped_len=%d send_len=%d display_len=%d line_count=%d max_line_chars=%d",
             response_raw_len,
             response_capped_len,
             len(response),
             len(response_display),
             len(lines),
+            max_line_chars,
         )
         if not lines:
             raise RuntimeError("Grok response is empty.")
@@ -641,9 +707,16 @@ def main() -> int:
         if missing_parts:
             raise RuntimeError(f"TTS output missing files: {missing_parts}")
 
-        merged_wav_path = run_dir / "merged.wav"
-        _concat_wavs(part_paths, merged_wav_path, args.line_gap_ms)
+        line_durations = [_wav_duration_sec(path) for path in part_paths]
+        total_wav_duration = sum(line_durations)
+        merged_wav_path: Path | None = None
+        if args.no_send_event or args.event_send_mode == "merged":
+            merged_wav_path = run_dir / "merged.wav"
+            _concat_wavs(part_paths, merged_wav_path, args.line_gap_ms)
 
+        sequence_session_id = run_dir.name
+        sequence_event_file = ""
+        sequence_sent = False
         event_stdout = ""
         event_stderr = ""
         event_sent = False
@@ -660,7 +733,7 @@ def main() -> int:
             if not sender_path.exists():
                 raise FileNotFoundError(f"Event sender script not found: {sender_path}")
 
-            event_command = [
+            event_command_base = [
                 "powershell",
                 "-ExecutionPolicy",
                 "Bypass",
@@ -668,14 +741,11 @@ def main() -> int:
                 str(sender_path),
                 "-PipeName",
                 args.pipe_name,
-                "-Main",
-                str(args.main),
-                "-AudioPath",
-                str(merged_wav_path),
             ]
             logger.info(
-                "event_send_start mode=%s preset_name=%s preset_id=%s random=%d face=%d keep_current_face=%d remote_http=%d host=%s port=%d endpoint=%s",
+                "event_send_start mode=%s audio_mode=%s preset_name=%s preset_id=%s random=%d face=%d keep_current_face=%d remote_http=%d host=%s port=%d endpoint=%s",
                 event_face_send_mode,
+                args.event_send_mode,
                 event_face_preset_name or "(empty)",
                 event_face_preset_id or "(empty)",
                 int(event_face_preset_random),
@@ -687,42 +757,105 @@ def main() -> int:
                 args.target_endpoint,
             )
             if args.remote_http or args.target_host.strip():
-                event_command.append("-RemoteHttp")
+                event_command_base.append("-RemoteHttp")
             if args.target_host.strip():
-                event_command.extend(["-TargetHost", args.target_host.strip()])
-                event_command.extend(["-TargetPort", str(args.target_port)])
-                event_command.extend(["-TargetEndpoint", args.target_endpoint])
+                event_command_base.extend(["-TargetHost", args.target_host.strip()])
+                event_command_base.extend(["-TargetPort", str(args.target_port)])
+                event_command_base.extend(["-TargetEndpoint", args.target_endpoint])
                 if args.target_token.strip():
-                    event_command.extend(["-TargetToken", args.target_token.strip()])
-            if event_face_send_mode == "preset_name":
-                if event_face_preset_random:
-                    event_command.append("-FacePresetRandom")
-                if event_face_preset_name:
-                    event_command.extend(["-FacePresetName", event_face_preset_name])
-                    event_face_selected_name = event_face_preset_name
-                if event_face_preset_id:
-                    event_command.extend(["-FacePresetId", event_face_preset_id])
-                    event_face_selected_id = event_face_preset_id
-                if (not event_face_preset_random) and (not event_face_preset_name) and (not event_face_preset_id):
-                    raise RuntimeError("face_send_mode=preset_name but face_preset_name is empty")
+                    event_command_base.extend(["-TargetToken", args.target_token.strip()])
+
+            if args.event_send_mode == "sequence":
+                items: list[dict[str, Any]] = []
+                for idx, wav_path in enumerate(part_paths):
+                    duration = line_durations[idx] if idx < len(line_durations) else 0.0
+                    subtitle = display_lines[idx] if idx < len(display_lines) else lines[idx]
+                    items.append(
+                        {
+                            "index": idx + 1,
+                            "audioPath": str(wav_path),
+                            "subtitle": subtitle,
+                            "durationSeconds": _round3(duration),
+                            "holdSeconds": _round3(max(0.1, duration + 0.2)),
+                        }
+                    )
+                sequence_payload: dict[str, Any] = {
+                    "type": "speak_sequence",
+                    "sessionId": sequence_session_id,
+                    "main": int(args.main),
+                    "interrupt": 1,
+                    "deleteAfterPlay": 0,
+                    "items": items,
+                }
+                if args.voice_volume >= 0:
+                    sequence_payload["volume"] = float(args.voice_volume)
+                if args.voice_pitch >= 0:
+                    sequence_payload["pitch"] = float(args.voice_pitch)
+                if event_face_send_mode == "preset_name":
+                    if event_face_preset_name:
+                        sequence_payload["facePresetName"] = event_face_preset_name
+                        event_face_selected_name = event_face_preset_name
+                    if event_face_preset_id:
+                        sequence_payload["facePresetId"] = event_face_preset_id
+                        event_face_selected_id = event_face_preset_id
+                    if event_face_preset_random:
+                        sequence_payload["facePresetRandom"] = 1
+                    if (not event_face_preset_random) and (not event_face_preset_name) and (not event_face_preset_id):
+                        raise RuntimeError("face_send_mode=preset_name but face_preset_name is empty")
+                else:
+                    if event_face >= 0:
+                        sequence_payload["face"] = event_face
+                    if event_keep_current_face:
+                        sequence_payload["keepCurrentFace"] = 1
+
+                sequence_event_path = run_dir / "voice_sequence_event.json"
+                sequence_event_path.write_text(
+                    json.dumps(sequence_payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                sequence_event_file = str(sequence_event_path)
+                event_command = event_command_base + ["-JsonFile", str(sequence_event_path)]
             else:
-                if event_face >= 0:
-                    event_command.extend(["-Face", str(event_face)])
-                if event_keep_current_face:
-                    event_command.append("-KeepCurrentFace")
-            if args.voice_volume >= 0:
-                event_command.extend(["-Volume", str(args.voice_volume)])
-            if args.voice_pitch >= 0:
-                event_command.extend(["-Pitch", str(args.voice_pitch)])
+                if merged_wav_path is None:
+                    merged_wav_path = run_dir / "merged.wav"
+                    _concat_wavs(part_paths, merged_wav_path, args.line_gap_ms)
+                event_command = event_command_base + [
+                    "-Main",
+                    str(args.main),
+                    "-AudioPath",
+                    str(merged_wav_path),
+                ]
+                if event_face_send_mode == "preset_name":
+                    if event_face_preset_random:
+                        event_command.append("-FacePresetRandom")
+                    if event_face_preset_name:
+                        event_command.extend(["-FacePresetName", event_face_preset_name])
+                        event_face_selected_name = event_face_preset_name
+                    if event_face_preset_id:
+                        event_command.extend(["-FacePresetId", event_face_preset_id])
+                        event_face_selected_id = event_face_preset_id
+                    if (not event_face_preset_random) and (not event_face_preset_name) and (not event_face_preset_id):
+                        raise RuntimeError("face_send_mode=preset_name but face_preset_name is empty")
+                else:
+                    if event_face >= 0:
+                        event_command.extend(["-Face", str(event_face)])
+                    if event_keep_current_face:
+                        event_command.append("-KeepCurrentFace")
+                if args.voice_volume >= 0:
+                    event_command.extend(["-Volume", str(args.voice_volume)])
+                if args.voice_pitch >= 0:
+                    event_command.extend(["-Pitch", str(args.voice_pitch)])
 
             try:
                 event_result = _run_subprocess(event_command)
                 event_stdout = event_result.stdout
                 event_stderr = event_result.stderr
                 event_sent = True
+                sequence_sent = args.event_send_mode == "sequence"
                 logger.info(
-                    "event_send_result status=ok mode=%s stdout_len=%d stderr_len=%d",
+                    "event_send_result status=ok mode=%s audio_mode=%s stdout_len=%d stderr_len=%d",
                     event_face_send_mode,
+                    args.event_send_mode,
                     len(event_stdout or ""),
                     len(event_stderr or ""),
                 )
@@ -751,10 +884,17 @@ def main() -> int:
                 "max_response_chars": int(args.max_response_chars),
                 "line_count": len(lines),
                 "line_texts": lines,
+                "display_line_texts": display_lines,
                 "line_wavs": [str(p) for p in part_paths],
-                "merged_wav": str(merged_wav_path),
+                "line_durations": [_round3(v) for v in line_durations],
+                "total_wav_duration": _round3(total_wav_duration),
+                "merged_wav": str(merged_wav_path) if merged_wav_path is not None else "",
                 "response_file": str(response_path),
                 "event_sent": event_sent,
+                "event_send_mode": args.event_send_mode,
+                "sequence_sent": sequence_sent,
+                "sequence_session_id": sequence_session_id,
+                "sequence_event_file": sequence_event_file,
                 "event_stdout": event_stdout,
                 "event_stderr": event_stderr,
                 "event_face_send_mode": event_face_send_mode,
@@ -773,6 +913,8 @@ def main() -> int:
     except Exception as exc:
         logger.error("tts_event_failed error=%s", exc)
         logger.debug("traceback=%s", traceback.format_exc())
+        event_stdout_value = str(locals().get("event_stdout", "") or "")
+        event_stderr_value = str(locals().get("event_stderr", "") or "")
         _print_json(
             {
                 "ok": False,
@@ -789,8 +931,12 @@ def main() -> int:
                 "merged_wav": "",
                 "response_file": "",
                 "event_sent": False,
-                "event_stdout": "",
-                "event_stderr": "",
+                "event_send_mode": str(getattr(args, "event_send_mode", "") or ""),
+                "sequence_sent": bool(locals().get("sequence_sent", False)),
+                "sequence_session_id": str(locals().get("sequence_session_id", "") or ""),
+                "sequence_event_file": str(locals().get("sequence_event_file", "") or ""),
+                "event_stdout": event_stdout_value,
+                "event_stderr": event_stderr_value,
                 "event_face_send_mode": _normalize_face_send_mode(args.face_send_mode),
                 "event_face_preset_name": str(args.face_preset_name or "").strip(),
                 "event_face_preset_id": str(args.face_preset_id or "").strip(),

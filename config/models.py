@@ -64,7 +64,7 @@ class AppConfig:
     external_text_token: str
     external_text_dedupe_max: int
     max_response_chars_enabled: bool = True
-    max_response_chars: int = 600
+    max_response_chars: int = 3000
     transcribe_server_port: int = 18760
     video_metadata_path: Optional[Path] = None
     sbv2_mode: str = "auto"

@@ -433,7 +433,7 @@ class MainWindow(QMainWindow):
         self.max_response_chars_enabled_chk.setChecked(True)
         self.max_response_chars_spin = _NoWheelSpinBox()
         self.max_response_chars_spin.setRange(1, 20000)
-        self.max_response_chars_spin.setValue(600)
+        self.max_response_chars_spin.setValue(3000)
         self.max_response_chars_spin.setSuffix(" 文字")
         self.max_response_chars_spin.setEnabled(True)
         self.max_response_chars_enabled_chk.toggled.connect(self.max_response_chars_spin.setEnabled)
@@ -1295,7 +1295,7 @@ class MainWindow(QMainWindow):
         script = PROJECT_ROOT / "run_grok_tts_event.py"
         if not script.exists():
             raise FileNotFoundError(f"script not found: {script}")
-        response_limit = max(1, int(cfg.max_response_chars)) if cfg.max_response_chars_enabled else 0
+        response_limit = max(3000, max(1, int(cfg.max_response_chars))) if cfg.max_response_chars_enabled else 0
         cmd = [
             str(cfg.pipeline_python), str(script),
             "--response-text", text,
@@ -1433,7 +1433,7 @@ class MainWindow(QMainWindow):
             f"target={target_host}:{cfg.target_port}{cfg.target_endpoint} "
             f"max_response_chars={cfg.max_response_chars} enabled={int(cfg.max_response_chars_enabled)}"
         )
-        request_limit = max(1, int(cfg.max_response_chars)) if cfg.max_response_chars_enabled else 0
+        request_limit = max(3000, max(1, int(cfg.max_response_chars))) if cfg.max_response_chars_enabled else 0
         self._append_log(
             f"[sbv2-test][grok-limit] request text_len={len(text)} max={request_limit}"
         )
@@ -1493,24 +1493,34 @@ class MainWindow(QMainWindow):
         self._append_log(f"[sbv2-test] original: {response_original[:80]}")
         self._append_log(f"[sbv2-test] send: {response_send[:80]}")
         self._append_log(f"[sbv2-test] display: {response_display[:80]}")
-        merged_wav = Path(str(data.get("merged_wav", ""))).resolve()
-        if not merged_wav.exists():
+        merged_wav_raw = str(data.get("merged_wav", "") or "").strip()
+        merged_wav = Path(merged_wav_raw).resolve() if merged_wav_raw else None
+        line_wav_values = data.get("line_wavs", [])
+        if not isinstance(line_wav_values, list):
+            line_wav_values = []
+        line_wavs = [
+            Path(str(path)).resolve()
+            for path in line_wav_values
+            if str(path).strip()
+        ]
+        audio_probe = merged_wav if merged_wav is not None and merged_wav.exists() else next((path for path in line_wavs if path.exists()), None)
+        if audio_probe is None:
             self.sbv2_test_status_label.setText("音声ファイルなし")
-            self._append_log("[sbv2-test] merged wav not found")
+            self._append_log("[sbv2-test] audio wav not found")
             return
 
-        current_run_dir = merged_wav.parent if merged_wav.parent.exists() else None
+        current_run_dir = audio_probe.parent.parent if audio_probe.parent.name == "parts" else audio_probe.parent
         previous_run_dir = self._sbv2_test_last_run_dir
-        self._sbv2_test_last_wav = merged_wav
+        self._sbv2_test_last_wav = audio_probe
         self._sbv2_test_last_run_dir = current_run_dir
         if previous_run_dir is not None and previous_run_dir != current_run_dir:
             self._cleanup_sbv2_test_run_dir(previous_run_dir)
         if no_send_event:
-            if self._play_wav_in_gui(merged_wav):
+            if merged_wav is not None and merged_wav.exists() and self._play_wav_in_gui(merged_wav):
                 self.sbv2_test_status_label.setText("送信前テスト完了: GUI再生中")
             else:
                 self.sbv2_test_status_label.setText("送信前テスト完了")
-            self._append_log(f"[sbv2-test] no-send-event mode: generated {merged_wav.name}")
+            self._append_log(f"[sbv2-test] no-send-event mode: generated {audio_probe.name}")
             return
 
         try:
@@ -1521,24 +1531,33 @@ class MainWindow(QMainWindow):
             return
         if not bool(data.get("event_sent", True)):
             self._append_log("[sbv2-test] event_sent=false")
-            if self._play_wav_in_gui(merged_wav):
+            if merged_wav is not None and merged_wav.exists() and self._play_wav_in_gui(merged_wav):
                 self.sbv2_test_status_label.setText("KKS送信失敗: GUI再生中")
                 self._append_log(f"[sbv2-test] local play: {merged_wav.name}")
             else:
                 self.sbv2_test_status_label.setText("KKS送信失敗")
             return
 
-        female_hold = _wav_duration_sec(str(merged_wav))
+        try:
+            female_hold = float(data.get("total_wav_duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            female_hold = 0.0
+        if female_hold <= 0.0 and merged_wav is not None:
+            female_hold = _wav_duration_sec(str(merged_wav))
+        sequence_sent = bool(data.get("sequence_sent", False))
+        sequence_session_id = str(data.get("sequence_session_id", "") or "").strip()
         if response_display:
             self._append_log(f"[sbv2-test] main-send text='{response_display[:80]}' hold={female_hold:.2f}s")
             worker = self._pipeline_worker
-            if worker is not None:
-                worker._send_subtitle(response_display, merged_wav.name, "StackFemale", hold_seconds=female_hold)
+            if worker is not None and not sequence_sent:
+                worker._send_subtitle(response_display, audio_probe.name, "StackFemale", hold_seconds=female_hold)
+            elif sequence_sent:
+                self._append_log("[sbv2-test] line subtitles handled by VoiceFaceEventBridge")
             else:
                 self._append_log("[sbv2-test] pipeline worker missing: subtitle skipped")
             delay = female_hold if female_hold else 0.0
             if worker is not None:
-                worker._schedule_response_text(response_display, cfg.main_index, delay)
+                worker._schedule_response_text(response_display, cfg.main_index, delay, session_id=sequence_session_id)
             else:
                 self._append_log("[sbv2-test] pipeline worker missing: response_text skipped")
         self.sbv2_test_status_label.setText("KKS送信完了")

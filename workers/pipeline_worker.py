@@ -6,6 +6,7 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -1090,7 +1091,7 @@ class PipelineWorker(QObject):
         self.log.emit(f"[video] トリガー検出失敗: '{payload}'")
         return []
 
-    def _schedule_response_text(self, text: str, main_index: int, delay_sec: float) -> None:
+    def _schedule_response_text(self, text: str, main_index: int, delay_sec: float, session_id: str = "") -> None:
         """Grokの生テキストをそのままKKSへ送る（C#側でキーワードマッチ）"""
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         pipe_name = self._cfg.pipe_name
@@ -1103,14 +1104,19 @@ class PipelineWorker(QObject):
         def _send():
             if not running_ref():
                 return
-            payload = json.dumps(
-                {"type": "response_text", "text": text, "main": main_index, "delaySeconds": delay_sec or 0.0},
-                ensure_ascii=False
-            )
+            payload_obj = {"type": "response_text", "text": text, "main": main_index, "delaySeconds": delay_sec or 0.0}
+            if session_id:
+                payload_obj["sessionId"] = session_id
+            payload = json.dumps(payload_obj, ensure_ascii=False)
+            json_path = ""
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as temp_file:
+                temp_file.write(payload)
+                temp_file.write("\n")
+                json_path = temp_file.name
             cmd = [
                 "powershell", "-ExecutionPolicy", "Bypass", "-File", str(sender_ps1),
                 "-PipeName", pipe_name,
-                "-Json", payload,
+                "-JsonFile", json_path,
             ]
             if remote_http or target_host:
                 cmd.append("-RemoteHttp")
@@ -1128,6 +1134,12 @@ class PipelineWorker(QObject):
                     self.log.emit(f"[response_text] 送信完了")
             except Exception as e:
                 self.log.emit(f"[response_text] pipe送信例外: {e}")
+            finally:
+                if json_path:
+                    try:
+                        Path(json_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
         threading.Thread(target=_send, daemon=True).start()
 
@@ -1210,7 +1222,7 @@ class PipelineWorker(QObject):
         # カナ変換ルールをconversion_jsonとして渡す（Grokレスポンスに適用される）
         kana_conv = [{"from": r[4], "to": r[1]} for r in self._kana_rules if r[4] and r[1]]
         combined_conv = kana_conv + list(self._cfg.conversion_dict or [])
-        response_limit = max(1, int(self._cfg.max_response_chars)) if self._cfg.max_response_chars_enabled else 0
+        response_limit = max(3000, max(1, int(self._cfg.max_response_chars))) if self._cfg.max_response_chars_enabled else 0
 
         p_cmd = [
             str(self._cfg.pipeline_python), str(pipeline_script),
@@ -1325,7 +1337,11 @@ class PipelineWorker(QObject):
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             merged_wav_raw = str(p_json.get("merged_wav", "")).strip()
             merged_wav_path = Path(merged_wav_raw) if merged_wav_raw else None
-            run_dir = merged_wav_path.parent if merged_wav_path is not None else None
+            sequence_event_raw = str(p_json.get("sequence_event_file", "")).strip()
+            sequence_event_path = Path(sequence_event_raw) if sequence_event_raw else None
+            run_dir = merged_wav_path.parent if merged_wav_path is not None else (sequence_event_path.parent if sequence_event_path is not None else None)
+            sequence_sent = bool(p_json.get("sequence_sent", False))
+            sequence_session_id = str(p_json.get("sequence_session_id", "") or "").strip()
             raw_len = int(p_json.get("response_raw_length", 0) or 0)
             capped_len = int(p_json.get("response_capped_length", 0) or 0)
             truncated = bool(p_json.get("response_truncated", False))
@@ -1370,7 +1386,12 @@ class PipelineWorker(QObject):
                     p_json["saved_merged_wav"] = str(saved_sbv2_wav)
                     self.log.emit(f"[save] sbv2_wav: {saved_sbv2_wav}")
 
-            female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
+            try:
+                female_hold = float(p_json.get("total_wav_duration", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                female_hold = 0.0
+            if female_hold <= 0.0:
+                female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
             response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
             response_send = str(p_json.get("response", response_original)).strip()
             response_display = str(p_json.get("response_display", response_original)).strip()
@@ -1379,8 +1400,10 @@ class PipelineWorker(QObject):
             if response_original and response_display == response_original:
                 self.log.emit("[tts-conv] display unchanged (display_apply off or no hit)")
             if p_json.get("ok"):
-                if response_display:
+                if response_display and not sequence_sent:
                     self._send_subtitle(response_display, wav_name, "StackFemale", hold_seconds=female_hold)
+                elif response_display and sequence_sent:
+                    self.log.emit("[subtitle] line subtitles are handled by VoiceFaceEventBridge sequence playback")
                 self.log.emit(f"[done] {label}")
             else:
                 self.log.emit(f"[error] pipeline: {p_json.get('error', '')}")
@@ -1393,10 +1416,12 @@ class PipelineWorker(QObject):
             # 生テキストをC#へ送信 → C#側でcoord/clothes検出・遅延実行
             if response_display:
                 delay = female_hold if female_hold else 0.0
-                self._schedule_response_text(response_display, self._cfg.main_index, delay)
+                self._schedule_response_text(response_display, self._cfg.main_index, delay, session_id=sequence_session_id)
             # TTS出力フォルダを削除
-            if run_dir is not None and run_dir.exists():
+            if run_dir is not None and run_dir.exists() and not sequence_sent:
                 shutil.rmtree(run_dir, ignore_errors=True)
+            elif run_dir is not None and run_dir.exists():
+                self.log.emit(f"[cleanup] keep sequence wav dir until playback ends: {run_dir}")
         except Exception as exc:
             msg = str(exc)
             lower = msg.lower()
