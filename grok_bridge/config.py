@@ -12,7 +12,7 @@ CONFIG_FILENAME = "grok_bridge_config.json"
 
 @dataclass
 class SelectorConfig:
-    input: str = 'div.ProseMirror[contenteditable="true"]'
+    input: str = 'textarea[aria-label="Grokに何でも聞いてください"], textarea[placeholder*="何でも聞いてください"], div.ProseMirror[contenteditable="true"]'
     send_buttons: list[str] = field(
         default_factory=lambda: [
             'button[aria-label="送信"]',

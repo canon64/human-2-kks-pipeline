@@ -132,7 +132,9 @@ def _read_input_text(driver, input_element) -> str:
         text = driver.execute_script(
             """
             const el = arguments[0];
-            return ((el && (el.innerText || el.textContent)) || '').trim();
+            if (!el) return '';
+            if (typeof el.value === 'string') return el.value.trim();
+            return ((el.innerText || el.textContent) || '').trim();
             """,
             input_element,
         )
@@ -214,13 +216,17 @@ def _set_input_text(driver, input_element, text: str) -> bool:
             const value = arguments[1];
             if (!el) return;
             el.focus();
-            try {
-              document.execCommand('selectAll', false, null);
-              document.execCommand('delete', false, null);
-              document.execCommand('insertText', false, value);
-            } catch (_) {}
-            el.innerText = value;
-            el.textContent = value;
+            if (typeof el.value === 'string') {
+              el.value = value;
+            } else {
+              try {
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+                document.execCommand('insertText', false, value);
+              } catch (_) {}
+              el.innerText = value;
+              el.textContent = value;
+            }
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
             """,
@@ -324,13 +330,13 @@ def _click_send_button(driver, config: BridgeConfig, logger: logging.Logger) -> 
 
 
 def _set_and_send(driver, text: str) -> bool:
-    """テキスト入力と送信ボタンクリックを1回のJS実行で行う。"""
+    """旧ProseMirror入力欄だけ、テキスト入力と送信クリックを1回のJS実行で行う。"""
     try:
         result = driver.execute_script(
             """
             const text = arguments[0];
             const input = document.querySelector('div.ProseMirror[contenteditable="true"]');
-            if (!input) return 'no_input';
+            if (!input) return 'no_fast_input';
             input.focus();
             try {
                 document.execCommand('selectAll', false, null);
@@ -338,11 +344,13 @@ def _set_and_send(driver, text: str) -> bool:
                 document.execCommand('insertText', false, text);
             } catch (_) {
                 input.innerText = text;
-                input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
             }
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
             // 送信ボタンを探してクリック
             const btn =
                 document.querySelector('button[aria-label="\\u9001\\u4fe1"]') ||
+                document.querySelector('button[aria-label*="\\u9001\\u4fe1"]') ||
                 document.querySelector('button[aria-label*="send"]') ||
                 document.querySelector('button[type="submit"]');
             if (btn && !btn.disabled && btn.offsetParent !== null) {

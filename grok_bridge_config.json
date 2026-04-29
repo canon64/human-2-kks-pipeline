@@ -6,7 +6,7 @@
   "response_settle_rounds": 2,
   "wait_for_icon_change": true,
   "selectors": {
-    "input": "div.ProseMirror[contenteditable=\"true\"]",
+    "input": "textarea[aria-label=\"Grokに何でも聞いてください\"], textarea[placeholder*=\"何でも聞いてください\"], div.ProseMirror[contenteditable=\"true\"]",
     "send_buttons": [
       "button[aria-label=\"送信\"]",
       "button[aria-label*=\"送信\"]",
