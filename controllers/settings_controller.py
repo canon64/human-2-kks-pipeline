@@ -166,6 +166,11 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         pre_roll_seconds=float(window.pre_roll_spin.value()),
         post_roll_seconds=float(window.post_roll_spin.value()),
         device=window.device_combo.currentData(),
+        vr_ptt_enabled=bool(window.vr_ptt_enabled_chk.isChecked()),
+        vr_ptt_host=window.vr_ptt_host_edit.text().strip() or "127.0.0.1",
+        vr_ptt_port=max(1, min(65535, int(window.vr_ptt_port_spin.value()))),
+        vr_ptt_token=window.vr_ptt_token_edit.text().strip(),
+        vr_ptt_timeout_seconds=max(0.2, float(window.vr_ptt_timeout_spin.value())),
         kks_root=Path(window.kks_root_edit.text().strip()).expanduser().resolve(),
         output_dir=Path(window.output_dir_edit.text().strip()).expanduser().resolve(),
         save_fasterwhisper_text=bool(window.save_faster_text_chk.isChecked()),
@@ -261,6 +266,11 @@ def save_config(
         "min_duration_seconds": cfg.min_duration_seconds,
         "pre_roll_seconds": cfg.pre_roll_seconds,
         "post_roll_seconds": cfg.post_roll_seconds,
+        "vr_ptt_enabled": cfg.vr_ptt_enabled,
+        "vr_ptt_host": cfg.vr_ptt_host,
+        "vr_ptt_port": cfg.vr_ptt_port,
+        "vr_ptt_token": cfg.vr_ptt_token,
+        "vr_ptt_timeout_seconds": cfg.vr_ptt_timeout_seconds,
         "kks_root": str(cfg.kks_root),
         "output_dir": str(cfg.output_dir),
         "save_fasterwhisper_text": cfg.save_fasterwhisper_text,
@@ -362,6 +372,11 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.min_dur_spin.setValue(f("min_duration_seconds", window.min_dur_spin.value()))
         window.pre_roll_spin.setValue(f("pre_roll_seconds", window.pre_roll_spin.value()))
         window.post_roll_spin.setValue(f("post_roll_seconds", window.post_roll_spin.value()))
+        window.vr_ptt_enabled_chk.setChecked(b("vr_ptt_enabled", False))
+        window.vr_ptt_host_edit.setText(s("vr_ptt_host", window.vr_ptt_host_edit.text()))
+        window.vr_ptt_port_spin.setValue(i("vr_ptt_port", window.vr_ptt_port_spin.value()))
+        window.vr_ptt_timeout_spin.setValue(f("vr_ptt_timeout_seconds", window.vr_ptt_timeout_spin.value()))
+        window.vr_ptt_token_edit.setText(s("vr_ptt_token", ""))
         window.kks_root_edit.setText(s("kks_root", window.kks_root_edit.text()))
         window.output_dir_edit.setText(s("output_dir", window.output_dir_edit.text()))
         window.save_faster_text_chk.setChecked(b("save_fasterwhisper_text", True))

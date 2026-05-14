@@ -43,6 +43,14 @@ def deferred_live_fields(cfg_prev: AppConfig, cfg_now: AppConfig) -> list[str]:
         fields.append("external_text_dedupe_max")
     if cfg_prev.device != cfg_now.device:
         fields.append("device")
+    if cfg_prev.vr_ptt_enabled != cfg_now.vr_ptt_enabled:
+        fields.append("vr_ptt_enabled")
+    if cfg_prev.vr_ptt_host != cfg_now.vr_ptt_host:
+        fields.append("vr_ptt_host")
+    if cfg_prev.vr_ptt_port != cfg_now.vr_ptt_port:
+        fields.append("vr_ptt_port")
+    if cfg_prev.vr_ptt_token != cfg_now.vr_ptt_token:
+        fields.append("vr_ptt_token")
     return fields
 
 
@@ -68,6 +76,7 @@ def apply_live_settings(window, cfg: AppConfig) -> None:
             pre_roll_seconds=cfg.pre_roll_seconds,
             post_roll_seconds=cfg.post_roll_seconds,
             device=cfg.device,
+            vr_ptt_timeout_seconds=cfg.vr_ptt_timeout_seconds,
             diagnostic_log_enabled=cfg.diagnostic_log_enabled,
             diagnostic_log_interval_ms=cfg.diagnostic_log_interval_ms,
         )

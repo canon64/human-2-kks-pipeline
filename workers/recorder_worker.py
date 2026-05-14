@@ -43,6 +43,7 @@ class RecorderWorker(QObject):
         pre_roll_seconds: float,
         post_roll_seconds: float,
         device: Optional[int],
+        vr_ptt_timeout_seconds: float,
         diagnostic_log_enabled: bool,
         diagnostic_log_interval_ms: int,
     ) -> None:
@@ -53,6 +54,7 @@ class RecorderWorker(QObject):
         self._config.pre_roll_seconds = pre_roll_seconds
         self._config.post_roll_seconds = post_roll_seconds
         self._config.device = device
+        self._config.external_control_timeout_seconds = max(0.2, float(vr_ptt_timeout_seconds))
         self._config.diagnostic_log_enabled = bool(diagnostic_log_enabled)
         self._config.diagnostic_log_interval_ms = max(100, int(diagnostic_log_interval_ms))
 
@@ -67,6 +69,7 @@ class RecorderWorker(QObject):
         rec.cfg.pre_roll_seconds = pre_roll_seconds
         rec.cfg.post_roll_seconds = post_roll_seconds
         rec.cfg.device = device
+        rec.cfg.external_control_timeout_seconds = max(0.2, float(vr_ptt_timeout_seconds))
         rec.cfg.diagnostic_log_enabled = bool(diagnostic_log_enabled)
         rec.cfg.diagnostic_log_interval_ms = max(100, int(diagnostic_log_interval_ms))
         rec.silence_limit_samples = int(silence_seconds * rec.cfg.sample_rate)

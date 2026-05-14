@@ -41,6 +41,8 @@ class RecorderConfig:
     external_control_host: str = "127.0.0.1"
     external_control_port: int = 17911
     external_control_token: str = ""
+    external_control_timeout_seconds: float = 1.5
+    external_control_strict_hold: bool = False
     diagnostic_log_enabled: bool = False
     diagnostic_log_interval_ms: int = 1000
 
@@ -116,6 +118,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--external-control-host", default="127.0.0.1", help="UDP bind host for external control.")
     parser.add_argument("--external-control-port", type=int, default=17911, help="UDP bind port for external control.")
     parser.add_argument("--external-control-token", default="", help="Optional auth token for external control.")
+    parser.add_argument("--external-control-timeout", type=float, default=1.5, help="Stop external hold if no start heartbeat arrives for this many seconds.")
+    parser.add_argument("--external-control-strict-hold", action="store_true", help="Discard audio outside external hold instead of keeping pre-roll.")
     parser.add_argument(
         "--diagnostic-log-enabled",
         dest="diagnostic_log_enabled",
@@ -277,6 +281,7 @@ class VoiceGateRecorder:
         self._control_thread: Optional[threading.Thread] = None
         self._control_socket: Optional[socket.socket] = None
         self.external_hold_active = False
+        self.external_hold_last_seen_monotonic = 0.0
         self._diag_last_level_log_monotonic = 0.0
 
     def _log(self, message: str) -> None:
@@ -443,6 +448,7 @@ class VoiceGateRecorder:
                 break
 
             if cmd == "start":
+                self.external_hold_last_seen_monotonic = time.monotonic()
                 if not self.external_hold_active:
                     self.external_hold_active = True
                     self._log("[ctrl] start accepted")
@@ -450,10 +456,28 @@ class VoiceGateRecorder:
             elif cmd == "stop":
                 if self.external_hold_active:
                     self.external_hold_active = False
+                    self.external_hold_last_seen_monotonic = 0.0
                     self._log("[ctrl] stop accepted")
                     self._diag_log("[diag][vad] external_hold=0 reason=control_stop")
                 if self.recording:
                     self.finalize_segment(force=True)
+
+    def _expire_external_hold_if_stale(self) -> None:
+        if not self._external_control_enabled() or not self.external_hold_active:
+            return
+        timeout = max(0.2, float(self.cfg.external_control_timeout_seconds))
+        last_seen = float(self.external_hold_last_seen_monotonic)
+        if last_seen <= 0.0:
+            return
+        elapsed = time.monotonic() - last_seen
+        if elapsed < timeout:
+            return
+        self.external_hold_active = False
+        self.external_hold_last_seen_monotonic = 0.0
+        self._log(f"[ctrl] timeout: stop external hold after {elapsed:.2f}s without heartbeat")
+        self._diag_log("[diag][vad] external_hold=0 reason=control_timeout")
+        if self.recording:
+            self.finalize_segment(force=True)
 
     def _tcp_send_loop(self) -> None:
         while self._running:
@@ -557,10 +581,14 @@ class VoiceGateRecorder:
                 if self._tcp_enabled():
                     self._log(f"[info] TCP send target={self.cfg.tcp_host}:{self.cfg.tcp_port}")
                 if self._external_control_enabled():
-                    self._log("[info] External control mode is enabled (push-to-talk by start/stop command).")
+                    self._log(
+                        "[info] External control mode is enabled "
+                        f"(push-to-talk by start/stop command, timeout={self.cfg.external_control_timeout_seconds:.2f}s)."
+                    )
                 self._log("[info] Press Ctrl+C to stop.")
                 while self._running:
                     self._drain_control_queue()
+                    self._expire_external_hold_if_stale()
                     try:
                         chunk = self.audio_q.get(timeout=0.5)
                     except queue.Empty:
@@ -646,9 +674,15 @@ class VoiceGateRecorder:
 
     def _process_chunk_external(self, chunk: np.ndarray, current_dbfs: float) -> None:
         if not self.external_hold_active:
-            # Keep pre-roll so that first phoneme is less likely to be clipped
-            # even if START arrives slightly late.
-            self.append_pre_roll(chunk)
+            if self.cfg.external_control_strict_hold:
+                self.pre_roll_frames.clear()
+                self.pre_roll_total_samples = 0
+                if self.recording:
+                    self.finalize_segment(force=True)
+            else:
+                # Keep pre-roll so that first phoneme is less likely to be clipped
+                # even if START arrives slightly late.
+                self.append_pre_roll(chunk)
             return
 
         if not self.recording:
@@ -765,6 +799,8 @@ def main() -> int:
         external_control_host=args.external_control_host.strip() or "127.0.0.1",
         external_control_port=max(1, int(args.external_control_port)),
         external_control_token=args.external_control_token,
+        external_control_timeout_seconds=max(0.2, float(args.external_control_timeout)),
+        external_control_strict_hold=bool(args.external_control_strict_hold),
         diagnostic_log_enabled=bool(args.diagnostic_log_enabled),
         diagnostic_log_interval_ms=max(100, int(args.diagnostic_log_interval_ms)),
     )

@@ -15,6 +15,11 @@ class AppConfig:
     pre_roll_seconds: float
     post_roll_seconds: float
     device: Optional[int]
+    vr_ptt_enabled: bool
+    vr_ptt_host: str
+    vr_ptt_port: int
+    vr_ptt_token: str
+    vr_ptt_timeout_seconds: float
     # Pipeline
     kks_root: Path
     output_dir: Path

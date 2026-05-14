@@ -387,6 +387,34 @@ class MainWindow(QMainWindow):
         self.post_roll_spin.setDecimals(1); self.post_roll_spin.setSuffix(" 秒")
         form.addRow("停止後余韻", self.post_roll_spin)
 
+        ptt_row = QHBoxLayout()
+        self.vr_ptt_enabled_chk = QCheckBox("KKS VR右Bホールド録音")
+        self.vr_ptt_enabled_chk.setChecked(False)
+        self.vr_ptt_host_edit = QLineEdit("127.0.0.1")
+        self.vr_ptt_host_edit.setMaximumWidth(130)
+        self.vr_ptt_port_spin = _NoWheelSpinBox()
+        self.vr_ptt_port_spin.setRange(1, 65535)
+        self.vr_ptt_port_spin.setValue(17911)
+        self.vr_ptt_timeout_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.vr_ptt_timeout_spin.setRange(0.2, 10.0)
+        self.vr_ptt_timeout_spin.setValue(1.5)
+        self.vr_ptt_timeout_spin.setDecimals(1)
+        self.vr_ptt_timeout_spin.setSuffix(" 秒")
+        self.vr_ptt_token_edit = QLineEdit()
+        self.vr_ptt_token_edit.setMaximumWidth(130)
+        ptt_row.addWidget(self.vr_ptt_enabled_chk)
+        ptt_row.addWidget(QLabel("bind"))
+        ptt_row.addWidget(self.vr_ptt_host_edit)
+        ptt_row.addWidget(QLabel("port"))
+        ptt_row.addWidget(self.vr_ptt_port_spin)
+        ptt_row.addWidget(QLabel("timeout"))
+        ptt_row.addWidget(self.vr_ptt_timeout_spin)
+        ptt_row.addWidget(QLabel("token"))
+        ptt_row.addWidget(self.vr_ptt_token_edit)
+        ptt_row.addStretch(1)
+        ptt_w = QWidget(); ptt_w.setLayout(ptt_row)
+        form.addRow("VRプッシュトーク", ptt_w)
+
         self._reload_devices()
 
     def _build_pipeline_tab(self) -> None:
@@ -2672,6 +2700,11 @@ class MainWindow(QMainWindow):
         self.min_dur_spin.valueChanged.connect(self._on_any_setting_changed)
         self.pre_roll_spin.valueChanged.connect(self._on_any_setting_changed)
         self.post_roll_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.vr_ptt_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.vr_ptt_host_edit.textChanged.connect(self._on_any_setting_changed)
+        self.vr_ptt_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.vr_ptt_timeout_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.vr_ptt_token_edit.textChanged.connect(self._on_any_setting_changed)
 
         # パイプライン設定
         self.kks_root_edit.textChanged.connect(self._on_any_setting_changed)
@@ -3273,8 +3306,12 @@ class MainWindow(QMainWindow):
             diagnostic_log_enabled=cfg.diagnostic_log_enabled,
             diagnostic_log_interval_ms=cfg.diagnostic_log_interval_ms,
             tcp_host="", tcp_port=17890, tcp_token="", tcp_timeout_seconds=20.0,
-            external_control_enabled=False, external_control_host="127.0.0.1",
-            external_control_port=17911, external_control_token="",
+            external_control_enabled=cfg.vr_ptt_enabled,
+            external_control_host=cfg.vr_ptt_host,
+            external_control_port=cfg.vr_ptt_port,
+            external_control_token=cfg.vr_ptt_token,
+            external_control_timeout_seconds=cfg.vr_ptt_timeout_seconds,
+            external_control_strict_hold=cfg.vr_ptt_enabled,
         )
         self._recorder_thread = QThread(self)
         self._recorder_worker = RecorderWorker(rec_cfg)
