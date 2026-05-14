@@ -1,5 +1,5 @@
 {
-  "debug_port": 9222,
+  "debug_port": 9223,
   "wait_after_send_seconds": 1.0,
   "response_timeout_seconds": 60.0,
   "response_poll_seconds": 0.2,

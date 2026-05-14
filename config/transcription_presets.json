@@ -1,0 +1,1589 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "tr_20260501003100544580",
+      "name": "基本",
+      "createdAt": "2026-05-01T00:31:00+09:00",
+      "updatedAt": "2026-05-01T00:31:00+09:00",
+      "entries": [
+        {
+          "enabled": true,
+          "from": "アギ声",
+          "to_grok": "喘ぎ声",
+          "to_display": "喘ぎ声",
+          "display_apply": true,
+          "order_index": 0
+        },
+        {
+          "enabled": true,
+          "from": "イカせて",
+          "to_grok": "昇天させて",
+          "to_display": "イカせて",
+          "display_apply": true,
+          "order_index": 1
+        },
+        {
+          "enabled": true,
+          "from": "イキそう",
+          "to_grok": "絶頂",
+          "to_display": "イキそう",
+          "display_apply": true,
+          "order_index": 2
+        },
+        {
+          "enabled": true,
+          "from": "いきそう",
+          "to_grok": "絶頂",
+          "to_display": "イキそう",
+          "display_apply": true,
+          "order_index": 3
+        },
+        {
+          "enabled": true,
+          "from": "うなほ",
+          "to_grok": "花",
+          "to_display": "オナホ",
+          "display_apply": true,
+          "order_index": 4
+        },
+        {
+          "enabled": true,
+          "from": "おかしいよ",
+          "to_grok": "可愛がるよ",
+          "to_display": "犯すよ",
+          "display_apply": false,
+          "order_index": 5
+        },
+        {
+          "enabled": true,
+          "from": "おかして",
+          "to_grok": "可愛がって",
+          "to_display": "犯して",
+          "display_apply": true,
+          "order_index": 6
+        },
+        {
+          "enabled": true,
+          "from": "おかず",
+          "to_grok": "女神",
+          "to_display": "おかず",
+          "display_apply": true,
+          "order_index": 7
+        },
+        {
+          "enabled": true,
+          "from": "おかすよ",
+          "to_grok": "可愛がるよ",
+          "to_display": "犯すよ",
+          "display_apply": false,
+          "order_index": 8
+        },
+        {
+          "enabled": true,
+          "from": "オナに",
+          "to_grok": "オナニー",
+          "to_display": "オナニー",
+          "display_apply": true,
+          "order_index": 9
+        },
+        {
+          "enabled": true,
+          "from": "おなほ",
+          "to_grok": "オナホ",
+          "to_display": "オナホ",
+          "display_apply": true,
+          "order_index": 10
+        },
+        {
+          "enabled": true,
+          "from": "オマンコ",
+          "to_grok": "オマンコ",
+          "to_display": "オマンコ",
+          "display_apply": true,
+          "order_index": 11
+        },
+        {
+          "enabled": true,
+          "from": "おまんこ",
+          "to_grok": "オマンコ",
+          "to_display": "オマンコ",
+          "display_apply": true,
+          "order_index": 12
+        },
+        {
+          "enabled": true,
+          "from": "おまんご",
+          "to_grok": "オマンコ",
+          "to_display": "オマンコ",
+          "display_apply": true,
+          "order_index": 13
+        },
+        {
+          "enabled": true,
+          "from": "お菓子",
+          "to_grok": "犯し",
+          "to_display": "犯し",
+          "display_apply": true,
+          "order_index": 14
+        },
+        {
+          "enabled": true,
+          "from": "お貸し",
+          "to_grok": "犯し",
+          "to_display": "犯し",
+          "display_apply": true,
+          "order_index": 15
+        },
+        {
+          "enabled": true,
+          "from": "カーリクビ",
+          "to_grok": "かりくび",
+          "to_display": "かりくび",
+          "display_apply": true,
+          "order_index": 16
+        },
+        {
+          "enabled": true,
+          "from": "こども",
+          "to_grok": "子供",
+          "to_display": "子供",
+          "display_apply": true,
+          "order_index": 17
+        },
+        {
+          "enabled": true,
+          "from": "しこって",
+          "to_grok": "シコって",
+          "to_display": "しこって",
+          "display_apply": true,
+          "order_index": 18
+        },
+        {
+          "enabled": true,
+          "from": "シコる",
+          "to_grok": "シコる",
+          "to_display": "シコる",
+          "display_apply": true,
+          "order_index": 19
+        },
+        {
+          "enabled": true,
+          "from": "ジドポルノ",
+          "to_grok": "たまごポルノ",
+          "to_display": "児童ポルノ",
+          "display_apply": true,
+          "order_index": 20
+        },
+        {
+          "enabled": true,
+          "from": "しゃべれ",
+          "to_grok": "しゃぶれ",
+          "to_display": "しゃぶれ",
+          "display_apply": true,
+          "order_index": 21
+        },
+        {
+          "enabled": true,
+          "from": "セイラムーン",
+          "to_grok": "セーラームーン",
+          "to_display": "セーラームーン",
+          "display_apply": true,
+          "order_index": 22
+        },
+        {
+          "enabled": true,
+          "from": "チートポルノ",
+          "to_grok": "たまごポルノ",
+          "to_display": "児童ポルノ",
+          "display_apply": true,
+          "order_index": 23
+        },
+        {
+          "enabled": true,
+          "from": "パイ釣り",
+          "to_grok": "パイズリ",
+          "to_display": "パイズリ",
+          "display_apply": true,
+          "order_index": 24
+        },
+        {
+          "enabled": true,
+          "from": "フェーダー",
+          "to_grok": "フェラ",
+          "to_display": "フェラ",
+          "display_apply": true,
+          "order_index": 25
+        },
+        {
+          "enabled": true,
+          "from": "フェダ",
+          "to_grok": "フェラ",
+          "to_display": "フェラ",
+          "display_apply": true,
+          "order_index": 26
+        },
+        {
+          "enabled": true,
+          "from": "ヘラ",
+          "to_grok": "フェラ",
+          "to_display": "フェラ",
+          "display_apply": true,
+          "order_index": 27
+        },
+        {
+          "enabled": true,
+          "from": "まんこ",
+          "to_grok": "マンコ",
+          "to_display": "マンコ",
+          "display_apply": true,
+          "order_index": 28
+        },
+        {
+          "enabled": true,
+          "from": "ユウナ",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 29
+        },
+        {
+          "enabled": true,
+          "from": "ゆうな",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 30
+        },
+        {
+          "enabled": true,
+          "from": "ゆだ",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 31
+        },
+        {
+          "enabled": true,
+          "from": "ゆな",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 32
+        },
+        {
+          "enabled": true,
+          "from": "ゆら",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 33
+        },
+        {
+          "enabled": true,
+          "from": "をなほ",
+          "to_grok": "オナホ",
+          "to_display": "オナホ",
+          "display_apply": true,
+          "order_index": 34
+        },
+        {
+          "enabled": true,
+          "from": "を直す",
+          "to_grok": "オナホ",
+          "to_display": "オナホ",
+          "display_apply": true,
+          "order_index": 35
+        },
+        {
+          "enabled": true,
+          "from": "一遍",
+          "to_grok": "いっぱい",
+          "to_display": "いっぱい",
+          "display_apply": true,
+          "order_index": 36
+        },
+        {
+          "enabled": true,
+          "from": "仮首",
+          "to_grok": "かりくび",
+          "to_display": "かりくび",
+          "display_apply": true,
+          "order_index": 37
+        },
+        {
+          "enabled": true,
+          "from": "加え",
+          "to_grok": "咥え",
+          "to_display": "咥え",
+          "display_apply": true,
+          "order_index": 38
+        },
+        {
+          "enabled": true,
+          "from": "加えて",
+          "to_grok": "咥えて",
+          "to_display": "咥えて",
+          "display_apply": true,
+          "order_index": 39
+        },
+        {
+          "enabled": true,
+          "from": "刈り首",
+          "to_grok": "かりくび",
+          "to_display": "かりくび",
+          "display_apply": true,
+          "order_index": 40
+        },
+        {
+          "enabled": true,
+          "from": "気上位",
+          "to_grok": "騎乗位",
+          "to_display": "騎乗位",
+          "display_apply": true,
+          "order_index": 41
+        },
+        {
+          "enabled": true,
+          "from": "筋身疎開",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": false,
+          "order_index": 42
+        },
+        {
+          "enabled": true,
+          "from": "筋身相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": false,
+          "order_index": 43
+        },
+        {
+          "enabled": true,
+          "from": "謹慎相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": true,
+          "order_index": 44
+        },
+        {
+          "enabled": true,
+          "from": "近伸相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": false,
+          "order_index": 45
+        },
+        {
+          "enabled": true,
+          "from": "近親相姦",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": false,
+          "order_index": 46
+        },
+        {
+          "enabled": true,
+          "from": "近親相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": true,
+          "order_index": 47
+        },
+        {
+          "enabled": true,
+          "from": "近親相談",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": true,
+          "order_index": 48
+        },
+        {
+          "enabled": true,
+          "from": "金芯",
+          "to_grok": "近親",
+          "to_display": "近親",
+          "display_apply": true,
+          "order_index": 49
+        },
+        {
+          "enabled": true,
+          "from": "金芯相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": true,
+          "order_index": 50
+        },
+        {
+          "enabled": true,
+          "from": "検診",
+          "to_grok": "近親",
+          "to_display": "近親",
+          "display_apply": true,
+          "order_index": 51
+        },
+        {
+          "enabled": true,
+          "from": "献身相関",
+          "to_grok": "近親相姦",
+          "to_display": "近親相姦",
+          "display_apply": true,
+          "order_index": 52
+        },
+        {
+          "enabled": true,
+          "from": "言うな",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 53
+        },
+        {
+          "enabled": true,
+          "from": "行きそう",
+          "to_grok": "イキそう",
+          "to_display": "イキそう",
+          "display_apply": true,
+          "order_index": 54
+        },
+        {
+          "enabled": true,
+          "from": "合い声",
+          "to_grok": "喘ぎ声",
+          "to_display": "喘ぎ声",
+          "display_apply": true,
+          "order_index": 55
+        },
+        {
+          "enabled": true,
+          "from": "自動",
+          "to_grok": "たまご",
+          "to_display": "児童",
+          "display_apply": true,
+          "order_index": 56
+        },
+        {
+          "enabled": true,
+          "from": "狩り首",
+          "to_grok": "かりくび",
+          "to_display": "かりくび",
+          "display_apply": true,
+          "order_index": 57
+        },
+        {
+          "enabled": true,
+          "from": "女に",
+          "to_grok": "オナニー",
+          "to_display": "オナニー",
+          "display_apply": true,
+          "order_index": 58
+        },
+        {
+          "enabled": true,
+          "from": "傷合い",
+          "to_grok": "キズナアイ",
+          "to_display": "キズナアイ",
+          "display_apply": true,
+          "order_index": 59
+        },
+        {
+          "enabled": true,
+          "from": "色い",
+          "to_grok": "エロい",
+          "to_display": "エロい",
+          "display_apply": true,
+          "order_index": 60
+        },
+        {
+          "enabled": true,
+          "from": "生徒霊",
+          "to_grok": "性奴隷",
+          "to_display": "性奴隷",
+          "display_apply": true,
+          "order_index": 61
+        },
+        {
+          "enabled": true,
+          "from": "染みられた",
+          "to_grok": "締められた",
+          "to_display": "締められた",
+          "display_apply": true,
+          "order_index": 62
+        },
+        {
+          "enabled": true,
+          "from": "相関",
+          "to_grok": "相姦",
+          "to_display": "相姦",
+          "display_apply": true,
+          "order_index": 63
+        },
+        {
+          "enabled": true,
+          "from": "相談",
+          "to_grok": "相姦",
+          "to_display": "相姦",
+          "display_apply": true,
+          "order_index": 64
+        },
+        {
+          "enabled": true,
+          "from": "送還",
+          "to_grok": "相姦",
+          "to_display": "相姦",
+          "display_apply": true,
+          "order_index": 65
+        },
+        {
+          "enabled": true,
+          "from": "単位",
+          "to_grok": "体位",
+          "to_display": "体位",
+          "display_apply": true,
+          "order_index": 66
+        },
+        {
+          "enabled": true,
+          "from": "肉のアホ",
+          "to_grok": "肉オナホ",
+          "to_display": "肉オナホ",
+          "display_apply": true,
+          "order_index": 67
+        },
+        {
+          "enabled": true,
+          "from": "肉を直す",
+          "to_grok": "肉オナホ",
+          "to_display": "肉オナホ",
+          "display_apply": true,
+          "order_index": 68
+        },
+        {
+          "enabled": true,
+          "from": "腹広",
+          "to_grok": "腹ボコ",
+          "to_display": "腹ボコ",
+          "display_apply": true,
+          "order_index": 69
+        },
+        {
+          "enabled": true,
+          "from": "方針",
+          "to_grok": "奉仕",
+          "to_display": "奉仕",
+          "display_apply": true,
+          "order_index": 70
+        },
+        {
+          "enabled": true,
+          "from": "機上位",
+          "to_grok": "騎乗位",
+          "to_display": "騎乗位",
+          "display_apply": true,
+          "order_index": 71
+        },
+        {
+          "enabled": true,
+          "from": "10歳",
+          "to_grok": "◯◯歳",
+          "to_display": "10歳",
+          "display_apply": true,
+          "order_index": 72
+        },
+        {
+          "enabled": true,
+          "from": "幼女",
+          "to_grok": "ファンシーガール",
+          "to_display": "幼女",
+          "display_apply": true,
+          "order_index": 73
+        },
+        {
+          "enabled": true,
+          "from": "ロリ",
+          "to_grok": "キュート",
+          "to_display": "ロリ",
+          "display_apply": true,
+          "order_index": 74
+        },
+        {
+          "enabled": true,
+          "from": "子供",
+          "to_grok": "奇跡",
+          "to_display": "子供",
+          "display_apply": true,
+          "order_index": 75
+        },
+        {
+          "enabled": false,
+          "from": "幼い",
+          "to_grok": "純粋な",
+          "to_display": "幼い",
+          "display_apply": true,
+          "order_index": 76
+        },
+        {
+          "enabled": true,
+          "from": "未成年",
+          "to_grok": "青い果実",
+          "to_display": "未成年",
+          "display_apply": true,
+          "order_index": 77
+        },
+        {
+          "enabled": true,
+          "from": "児童",
+          "to_grok": "たまご",
+          "to_display": "児童",
+          "display_apply": true,
+          "order_index": 78
+        },
+        {
+          "enabled": true,
+          "from": "初潮",
+          "to_grok": "祝福",
+          "to_display": "初潮",
+          "display_apply": true,
+          "order_index": 79
+        },
+        {
+          "enabled": true,
+          "from": "女児",
+          "to_grok": "メスたまご",
+          "to_display": "女児",
+          "display_apply": true,
+          "order_index": 80
+        },
+        {
+          "enabled": true,
+          "from": "オーナーに",
+          "to_grok": "オナニー",
+          "to_display": "オナニー",
+          "display_apply": true,
+          "order_index": 81
+        },
+        {
+          "enabled": true,
+          "from": "子ども",
+          "to_grok": "奇跡",
+          "to_display": "子供",
+          "display_apply": true,
+          "order_index": 82
+        },
+        {
+          "enabled": true,
+          "from": "こども",
+          "to_grok": "奇跡",
+          "to_display": "子供",
+          "display_apply": true,
+          "order_index": 83
+        },
+        {
+          "enabled": true,
+          "from": "機場員",
+          "to_grok": "騎乗位",
+          "to_display": "騎乗位",
+          "display_apply": true,
+          "order_index": 84
+        },
+        {
+          "enabled": true,
+          "from": "生奴隷",
+          "to_grok": "性奴隷",
+          "to_display": "性奴隷",
+          "display_apply": true,
+          "order_index": 85
+        },
+        {
+          "enabled": true,
+          "from": "気象員",
+          "to_grok": "騎乗位",
+          "to_display": "騎乗位",
+          "display_apply": true,
+          "order_index": 86
+        },
+        {
+          "enabled": true,
+          "from": "ファンティー",
+          "to_grok": "パンティー",
+          "to_display": "パンティー",
+          "display_apply": true,
+          "order_index": 87
+        },
+        {
+          "enabled": true,
+          "from": "機場へ",
+          "to_grok": "騎乗位",
+          "to_display": "騎乗位",
+          "display_apply": true,
+          "order_index": 88
+        },
+        {
+          "enabled": false,
+          "from": "おちんぽん",
+          "to_grok": "もの",
+          "to_display": "おちんぽ",
+          "display_apply": true,
+          "order_index": 89
+        },
+        {
+          "enabled": false,
+          "from": "おちんぽ",
+          "to_grok": "もの",
+          "to_display": "おちんぽ",
+          "display_apply": true,
+          "order_index": 90
+        },
+        {
+          "enabled": false,
+          "from": "インラン",
+          "to_grok": "積極的",
+          "to_display": "淫乱",
+          "display_apply": true,
+          "order_index": 91
+        },
+        {
+          "enabled": false,
+          "from": "インナ",
+          "to_grok": "積極的",
+          "to_display": "淫乱",
+          "display_apply": true,
+          "order_index": 92
+        },
+        {
+          "enabled": false,
+          "from": "マナの下",
+          "to_grok": "マナの舌",
+          "to_display": "マナの舌",
+          "display_apply": true,
+          "order_index": 93
+        },
+        {
+          "enabled": false,
+          "from": "マナー",
+          "to_grok": "マナ",
+          "to_display": "マナ",
+          "display_apply": true,
+          "order_index": 94
+        },
+        {
+          "enabled": false,
+          "from": "まな",
+          "to_grok": "マナ",
+          "to_display": "マナ",
+          "display_apply": true,
+          "order_index": 95
+        },
+        {
+          "enabled": false,
+          "from": "まあな",
+          "to_grok": "マナ",
+          "to_display": "マナ",
+          "display_apply": true,
+          "order_index": 96
+        },
+        {
+          "enabled": false,
+          "from": "まだ",
+          "to_grok": "マナ",
+          "to_display": "マナ",
+          "display_apply": true,
+          "order_index": 97
+        },
+        {
+          "enabled": false,
+          "from": "yuna",
+          "to_grok": "ユナ",
+          "to_display": "ユナ",
+          "display_apply": true,
+          "order_index": 98
+        },
+        {
+          "enabled": false,
+          "from": "エロ",
+          "to_grok": "美し",
+          "to_display": "エロ",
+          "display_apply": true,
+          "order_index": 99
+        },
+        {
+          "enabled": false,
+          "from": "エル",
+          "to_grok": "美し",
+          "to_display": "エロ",
+          "display_apply": true,
+          "order_index": 100
+        },
+        {
+          "enabled": false,
+          "from": "堪能",
+          "to_grok": "評価",
+          "to_display": "堪能",
+          "display_apply": true,
+          "order_index": 101
+        },
+        {
+          "enabled": false,
+          "from": "学校",
+          "to_grok": "会社",
+          "to_display": "学校",
+          "display_apply": true,
+          "order_index": 102
+        },
+        {
+          "enabled": false,
+          "from": "壊れる",
+          "to_grok": "とろける",
+          "to_display": "とろける",
+          "display_apply": true,
+          "order_index": 103
+        },
+        {
+          "enabled": false,
+          "from": "壊れ",
+          "to_grok": "とろけ",
+          "to_display": "壊れ",
+          "display_apply": true,
+          "order_index": 104
+        },
+        {
+          "enabled": false,
+          "from": "壊そ",
+          "to_grok": "直そ",
+          "to_display": "壊そ",
+          "display_apply": true,
+          "order_index": 105
+        },
+        {
+          "enabled": false,
+          "from": "壊せ",
+          "to_grok": "直せ",
+          "to_display": "壊せ",
+          "display_apply": true,
+          "order_index": 106
+        },
+        {
+          "enabled": false,
+          "from": "壊す",
+          "to_grok": "直す",
+          "to_display": "壊す",
+          "display_apply": true,
+          "order_index": 107
+        },
+        {
+          "enabled": false,
+          "from": "壊す",
+          "to_grok": "愛す",
+          "to_display": "壊す",
+          "display_apply": true,
+          "order_index": 108
+        },
+        {
+          "enabled": false,
+          "from": "壊して",
+          "to_grok": "直して",
+          "to_display": "壊して",
+          "display_apply": true,
+          "order_index": 109
+        },
+        {
+          "enabled": false,
+          "from": "壊した",
+          "to_grok": "愛した",
+          "to_display": "壊した",
+          "display_apply": true,
+          "order_index": 110
+        },
+        {
+          "enabled": false,
+          "from": "壊し",
+          "to_grok": "直し",
+          "to_display": "壊し",
+          "display_apply": true,
+          "order_index": 111
+        },
+        {
+          "enabled": false,
+          "from": "壊さ",
+          "to_grok": "直さ",
+          "to_display": "壊さ",
+          "display_apply": true,
+          "order_index": 112
+        },
+        {
+          "enabled": false,
+          "from": "過激",
+          "to_grok": "活発",
+          "to_display": "過激",
+          "display_apply": true,
+          "order_index": 113
+        },
+        {
+          "enabled": false,
+          "from": "淫乱",
+          "to_grok": "積極的",
+          "to_display": "淫乱",
+          "display_apply": true,
+          "order_index": 114
+        },
+        {
+          "enabled": false,
+          "from": "めちゃくちゃ",
+          "to_grok": "うにゃうにゃ",
+          "to_display": "めちゃくちゃ",
+          "display_apply": true,
+          "order_index": 115
+        },
+        {
+          "enabled": false,
+          "from": "マンコ",
+          "to_grok": "蜜壺",
+          "to_display": "マンコ",
+          "display_apply": true,
+          "order_index": 116
+        },
+        {
+          "enabled": false,
+          "from": "ボロボロに",
+          "to_grok": "キラキラに",
+          "to_display": "ボロボロに",
+          "display_apply": true,
+          "order_index": 117
+        },
+        {
+          "enabled": false,
+          "from": "ボッキする",
+          "to_grok": "大きくなる",
+          "to_display": "勃起する",
+          "display_apply": true,
+          "order_index": 118
+        },
+        {
+          "enabled": false,
+          "from": "ポッキし",
+          "to_grok": "大きくなり",
+          "to_display": "勃起し",
+          "display_apply": true,
+          "order_index": 119
+        },
+        {
+          "enabled": false,
+          "from": "ボッキし",
+          "to_grok": "大きくなり",
+          "to_display": "勃起し",
+          "display_apply": true,
+          "order_index": 120
+        },
+        {
+          "enabled": false,
+          "from": "ベロベロ",
+          "to_grok": "テカテカ",
+          "to_display": "ベロベロ",
+          "display_apply": true,
+          "order_index": 121
+        },
+        {
+          "enabled": false,
+          "from": "フェラ",
+          "to_grok": "口で",
+          "to_display": "フェラ",
+          "display_apply": true,
+          "order_index": 122
+        },
+        {
+          "enabled": false,
+          "from": "パパ",
+          "to_grok": "ご主人様",
+          "to_display": "パパ",
+          "display_apply": true,
+          "order_index": 123
+        },
+        {
+          "enabled": false,
+          "from": "ぬれぬれ",
+          "to_grok": "湿って",
+          "to_display": "ぬれぬれ",
+          "display_apply": true,
+          "order_index": 124
+        },
+        {
+          "enabled": false,
+          "from": "つっこんで",
+          "to_grok": "入って",
+          "to_display": "つっこんで",
+          "display_apply": true,
+          "order_index": 125
+        },
+        {
+          "enabled": false,
+          "from": "つこんで",
+          "to_grok": "入って",
+          "to_display": "突っ込んで",
+          "display_apply": true,
+          "order_index": 126
+        },
+        {
+          "enabled": false,
+          "from": "ちんぽ",
+          "to_grok": "モノ",
+          "to_display": "おちんぽ",
+          "display_apply": true,
+          "order_index": 127
+        },
+        {
+          "enabled": false,
+          "from": "チンポ",
+          "to_grok": "モノ",
+          "to_display": "チンポ",
+          "display_apply": true,
+          "order_index": 128
+        },
+        {
+          "enabled": false,
+          "from": "チンプ",
+          "to_grok": "モノ",
+          "to_display": "チンポ",
+          "display_apply": true,
+          "order_index": 129
+        },
+        {
+          "enabled": false,
+          "from": "タイ",
+          "to_grok": "体位",
+          "to_display": "体位",
+          "display_apply": true,
+          "order_index": 130
+        },
+        {
+          "enabled": false,
+          "from": "セックス",
+          "to_grok": "セッション",
+          "to_display": "セックス",
+          "display_apply": true,
+          "order_index": 131
+        },
+        {
+          "enabled": false,
+          "from": "しゃぶって",
+          "to_grok": "して",
+          "to_display": "して",
+          "display_apply": true,
+          "order_index": 132
+        },
+        {
+          "enabled": false,
+          "from": "シャーシ",
+          "to_grok": "祝福の洗礼",
+          "to_display": "射精",
+          "display_apply": true,
+          "order_index": 133
+        },
+        {
+          "enabled": false,
+          "from": "しごいて",
+          "to_grok": "自分で慰めて",
+          "to_display": "しごいて",
+          "display_apply": true,
+          "order_index": 134
+        },
+        {
+          "enabled": false,
+          "from": "ぐちゃぐちゃ",
+          "to_grok": "ピカピカ",
+          "to_display": "ぐちゃぐちゃ",
+          "display_apply": true,
+          "order_index": 135
+        },
+        {
+          "enabled": false,
+          "from": "お父さん",
+          "to_grok": "ご主人様",
+          "to_display": "お父さん",
+          "display_apply": true,
+          "order_index": 136
+        },
+        {
+          "enabled": false,
+          "from": "オナホ",
+          "to_grok": "花",
+          "to_display": "オナホ",
+          "display_apply": true,
+          "order_index": 137
+        },
+        {
+          "enabled": false,
+          "from": "オナニー",
+          "to_grok": "ソロプレイ",
+          "to_display": "オナニー",
+          "display_apply": true,
+          "order_index": 138
+        },
+        {
+          "enabled": false,
+          "from": "舐め回し",
+          "to_grok": "磨き上げ",
+          "to_display": "舐め回し",
+          "display_apply": true,
+          "order_index": 139
+        },
+        {
+          "enabled": false,
+          "from": "舐める",
+          "to_grok": "磨く",
+          "to_display": "舐める",
+          "display_apply": true,
+          "order_index": 140
+        },
+        {
+          "enabled": false,
+          "from": "舐めて",
+          "to_grok": "磨いて",
+          "to_display": "舐めて",
+          "display_apply": true,
+          "order_index": 141
+        },
+        {
+          "enabled": false,
+          "from": "絆愛",
+          "to_grok": "キズナアイ",
+          "to_display": "キズナアイ",
+          "display_apply": true,
+          "order_index": 142
+        },
+        {
+          "enabled": false,
+          "from": "娘",
+          "to_grok": "恋人",
+          "to_display": "恋人",
+          "display_apply": true,
+          "order_index": 143
+        },
+        {
+          "enabled": false,
+          "from": "未発達な",
+          "to_grok": "けがれなき",
+          "to_display": "汚れなき",
+          "display_apply": true,
+          "order_index": 144
+        },
+        {
+          "enabled": false,
+          "from": "未発達",
+          "to_grok": "汚れなき",
+          "to_display": "汚れなき",
+          "display_apply": true,
+          "order_index": 145
+        },
+        {
+          "enabled": false,
+          "from": "勃起する",
+          "to_grok": "大きくなる",
+          "to_display": "勃起する",
+          "display_apply": true,
+          "order_index": 146
+        },
+        {
+          "enabled": false,
+          "from": "勃起し",
+          "to_grok": "大きくなり",
+          "to_display": "勃起し",
+          "display_apply": true,
+          "order_index": 147
+        },
+        {
+          "enabled": false,
+          "from": "抱いて",
+          "to_grok": "めでて",
+          "to_display": "愛でて",
+          "display_apply": true,
+          "order_index": 148
+        },
+        {
+          "enabled": false,
+          "from": "変態",
+          "to_grok": "芸術的",
+          "to_display": "変態",
+          "display_apply": true,
+          "order_index": 149
+        },
+        {
+          "enabled": false,
+          "from": "晩祭り",
+          "to_grok": "BAN祭り",
+          "to_display": "BAN祭り",
+          "display_apply": true,
+          "order_index": 150
+        },
+        {
+          "enabled": false,
+          "from": "犯そ",
+          "to_grok": "可愛がろ",
+          "to_display": "犯そ",
+          "display_apply": true,
+          "order_index": 151
+        },
+        {
+          "enabled": false,
+          "from": "犯すよ",
+          "to_grok": "可愛がるよ",
+          "to_display": "",
+          "display_apply": false,
+          "order_index": 152
+        },
+        {
+          "enabled": false,
+          "from": "犯す",
+          "to_grok": "可愛がる",
+          "to_display": "犯す",
+          "display_apply": true,
+          "order_index": 153
+        },
+        {
+          "enabled": false,
+          "from": "犯して",
+          "to_grok": "可愛がって",
+          "to_display": "",
+          "display_apply": false,
+          "order_index": 154
+        },
+        {
+          "enabled": false,
+          "from": "犯したい",
+          "to_grok": "可愛がりたい",
+          "to_display": "",
+          "display_apply": false,
+          "order_index": 155
+        },
+        {
+          "enabled": false,
+          "from": "犯されてる",
+          "to_grok": "可愛がられてる",
+          "to_display": "犯されてる",
+          "display_apply": true,
+          "order_index": 156
+        },
+        {
+          "enabled": false,
+          "from": "犯さ",
+          "to_grok": "可愛がら",
+          "to_display": "犯さ",
+          "display_apply": true,
+          "order_index": 157
+        },
+        {
+          "enabled": false,
+          "from": "犯さ",
+          "to_grok": "可愛がら",
+          "to_display": "犯さ",
+          "display_apply": true,
+          "order_index": 158
+        },
+        {
+          "enabled": false,
+          "from": "発情",
+          "to_grok": "感動",
+          "to_display": "発情",
+          "display_apply": true,
+          "order_index": 159
+        },
+        {
+          "enabled": false,
+          "from": "入れる",
+          "to_grok": "戻す",
+          "to_display": "入れる",
+          "display_apply": true,
+          "order_index": 160
+        },
+        {
+          "enabled": false,
+          "from": "入れて",
+          "to_grok": "戻して",
+          "to_display": "入れて",
+          "display_apply": true,
+          "order_index": 161
+        },
+        {
+          "enabled": false,
+          "from": "入れたい",
+          "to_grok": "戻したい",
+          "to_display": "入れたい",
+          "display_apply": true,
+          "order_index": 162
+        },
+        {
+          "enabled": false,
+          "from": "入れさ",
+          "to_grok": "戻さ",
+          "to_display": "入れさ",
+          "display_apply": true,
+          "order_index": 163
+        },
+        {
+          "enabled": false,
+          "from": "肉オナホ",
+          "to_grok": "一輪の花",
+          "to_display": "肉オナホ",
+          "display_apply": true,
+          "order_index": 164
+        },
+        {
+          "enabled": false,
+          "from": "肉",
+          "to_grok": "一輪の",
+          "to_display": "肉",
+          "display_apply": true,
+          "order_index": 165
+        },
+        {
+          "enabled": false,
+          "from": "突っ込んで",
+          "to_grok": "入って",
+          "to_display": "突っ込んで",
+          "display_apply": true,
+          "order_index": 166
+        },
+        {
+          "enabled": false,
+          "from": "突く",
+          "to_grok": "ポム",
+          "to_display": "突く",
+          "display_apply": true,
+          "order_index": 167
+        },
+        {
+          "enabled": false,
+          "from": "突き",
+          "to_grok": "ポム",
+          "to_display": "突き",
+          "display_apply": true,
+          "order_index": 168
+        },
+        {
+          "enabled": false,
+          "from": "突いて",
+          "to_grok": "ポムって",
+          "to_display": "突いて",
+          "display_apply": true,
+          "order_index": 169
+        },
+        {
+          "enabled": false,
+          "from": "道具",
+          "to_grok": "舞い散る花",
+          "to_display": "道具",
+          "display_apply": true,
+          "order_index": 170
+        },
+        {
+          "enabled": false,
+          "from": "同級生",
+          "to_grok": "同僚",
+          "to_display": "同級生",
+          "display_apply": true,
+          "order_index": 171
+        },
+        {
+          "enabled": false,
+          "from": "頭がおかしく",
+          "to_grok": "頭が真っ白に",
+          "to_display": "頭がおかしく",
+          "display_apply": true,
+          "order_index": 172
+        },
+        {
+          "enabled": false,
+          "from": "体",
+          "to_grok": "キャンバス",
+          "to_display": "体",
+          "display_apply": true,
+          "order_index": 173
+        },
+        {
+          "enabled": false,
+          "from": "舌",
+          "to_grok": "滑らかなの",
+          "to_display": "舌",
+          "display_apply": true,
+          "order_index": 174
+        },
+        {
+          "enabled": false,
+          "from": "精液",
+          "to_grok": "俺の愛",
+          "to_display": "精液",
+          "display_apply": true,
+          "order_index": 175
+        },
+        {
+          "enabled": false,
+          "from": "生きそう",
+          "to_grok": "絶頂",
+          "to_display": "イキそう",
+          "display_apply": true,
+          "order_index": 176
+        },
+        {
+          "enabled": false,
+          "from": "小さな",
+          "to_grok": "新入社員",
+          "to_display": "小さな",
+          "display_apply": true,
+          "order_index": 177
+        },
+        {
+          "enabled": false,
+          "from": "小さい",
+          "to_grok": "新入社員",
+          "to_display": "小さい",
+          "display_apply": true,
+          "order_index": 178
+        },
+        {
+          "enabled": false,
+          "from": "射精",
+          "to_grok": "祝福の洗礼",
+          "to_display": "射精",
+          "display_apply": true,
+          "order_index": 179
+        },
+        {
+          "enabled": false,
+          "from": "実の娘",
+          "to_grok": "最愛の恋人",
+          "to_display": "実の娘",
+          "display_apply": true,
+          "order_index": 180
+        },
+        {
+          "enabled": false,
+          "from": "湿られて",
+          "to_grok": "締められて",
+          "to_display": "締められて",
+          "display_apply": true,
+          "order_index": 181
+        },
+        {
+          "enabled": false,
+          "from": "子供",
+          "to_grok": "奇跡",
+          "to_display": "子供",
+          "display_apply": true,
+          "order_index": 182
+        },
+        {
+          "enabled": false,
+          "from": "子宮",
+          "to_grok": "お腹",
+          "to_display": "子宮",
+          "display_apply": true,
+          "order_index": 183
+        },
+        {
+          "enabled": false,
+          "from": "子の",
+          "to_grok": "この",
+          "to_display": "この",
+          "display_apply": true,
+          "order_index": 184
+        },
+        {
+          "enabled": false,
+          "from": "継ぐ",
+          "to_grok": "突く",
+          "to_display": "突く",
+          "display_apply": true,
+          "order_index": 185
+        },
+        {
+          "enabled": false,
+          "from": "血の繋がった",
+          "to_grok": "赤い糸で結ばれた",
+          "to_display": "血の繋がった",
+          "display_apply": true,
+          "order_index": 186
+        },
+        {
+          "enabled": false,
+          "from": "禁止に",
+          "to_grok": "特別な",
+          "to_display": "近親",
+          "display_apply": true,
+          "order_index": 187
+        },
+        {
+          "enabled": false,
+          "from": "禁止",
+          "to_grok": "特別な",
+          "to_display": "近親",
+          "display_apply": true,
+          "order_index": 188
+        },
+        {
+          "enabled": false,
+          "from": "興奮するよ",
+          "to_grok": "癒やされるよ",
+          "to_display": "興奮するよ",
+          "display_apply": true,
+          "order_index": 189
+        },
+        {
+          "enabled": false,
+          "from": "興奮する",
+          "to_grok": "癒やされる",
+          "to_display": "興奮する",
+          "display_apply": true,
+          "order_index": 190
+        },
+        {
+          "enabled": false,
+          "from": "興奮すぎよ",
+          "to_grok": "癒やされるよ",
+          "to_display": "興奮するよ",
+          "display_apply": true,
+          "order_index": 191
+        },
+        {
+          "enabled": false,
+          "from": "興奮してくる",
+          "to_grok": "癒やされる",
+          "to_display": "興奮してくる",
+          "display_apply": true,
+          "order_index": 192
+        },
+        {
+          "enabled": false,
+          "from": "興奮させて",
+          "to_grok": "癒やして",
+          "to_display": "興奮させて",
+          "display_apply": true,
+          "order_index": 193
+        },
+        {
+          "enabled": false,
+          "from": "気持ちよく",
+          "to_grok": "素晴らしく",
+          "to_display": "気持ちよく",
+          "display_apply": true,
+          "order_index": 194
+        },
+        {
+          "enabled": false,
+          "from": "気持ちがいい",
+          "to_grok": "素晴らしい",
+          "to_display": "気持ちがいい",
+          "display_apply": true,
+          "order_index": 195
+        },
+        {
+          "enabled": false,
+          "from": "気持ちいい",
+          "to_grok": "素晴らしい",
+          "to_display": "気持ちいい",
+          "display_apply": true,
+          "order_index": 196
+        }
+      ]
+    }
+  ]
+}

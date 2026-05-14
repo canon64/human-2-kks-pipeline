@@ -38,6 +38,13 @@ def _read_diagnostic_log_interval_ms(config_file: Path) -> int:
         return 1000
 
 
+def _sync_grok_bridge_debug_port(config_file: Path, port: int) -> None:
+    grok_config_file = config_file.parent / "grok_bridge_config.json"
+    data = _load_config_json(grok_config_file)
+    data["debug_port"] = int(port)
+    grok_config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -320,6 +327,7 @@ def save_config(
         "chrome_profile": window.chrome_profile_combo.currentData() or "",
     }
     config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _sync_grok_bridge_debug_port(config_file, window.chrome_port_spin.value())
     return cfg
 
 
