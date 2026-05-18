@@ -506,6 +506,55 @@ class MainWindow(QMainWindow):
         pp_btn.clicked.connect(lambda: self._pick_file(self.pipeline_python_edit, "Grok/TTS Python"))
         form.addRow("Grok/TTS Python", self._hrow(self.pipeline_python_edit, pp_btn))
 
+        llm_row = QHBoxLayout()
+        self.llm_backend_combo = _NoWheelComboBox()
+        self.llm_backend_combo.addItem("Grokブラウザ", "grok_browser")
+        self.llm_backend_combo.addItem("ローカルLLM(OpenAI互換)", "local_openai")
+        self.llm_base_url_edit = QLineEdit("http://127.0.0.1:1234/v1")
+        self.llm_base_url_edit.setPlaceholderText("LM Studio: http://127.0.0.1:1234/v1")
+        self.llm_model_edit = QLineEdit("")
+        self.llm_model_edit.setPlaceholderText("model id")
+        llm_row.addWidget(QLabel("backend"))
+        llm_row.addWidget(self.llm_backend_combo)
+        llm_row.addWidget(QLabel("base"))
+        llm_row.addWidget(self.llm_base_url_edit, 1)
+        llm_row.addWidget(QLabel("model"))
+        llm_row.addWidget(self.llm_model_edit, 1)
+        llm_w = QWidget(); llm_w.setLayout(llm_row)
+        form.addRow("LLM", llm_w)
+
+        llm_detail_row = QHBoxLayout()
+        self.llm_api_key_edit = QLineEdit("lm-studio")
+        self.llm_api_key_edit.setPlaceholderText("local API key")
+        self.llm_temperature_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.llm_temperature_spin.setRange(0.0, 2.0)
+        self.llm_temperature_spin.setDecimals(2)
+        self.llm_temperature_spin.setSingleStep(0.05)
+        self.llm_temperature_spin.setValue(0.7)
+        self.llm_max_tokens_spin = _NoWheelSpinBox()
+        self.llm_max_tokens_spin.setRange(1, 32768)
+        self.llm_max_tokens_spin.setValue(512)
+        self.llm_timeout_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.llm_timeout_spin.setRange(1.0, 600.0)
+        self.llm_timeout_spin.setDecimals(1)
+        self.llm_timeout_spin.setValue(120.0)
+        self.llm_timeout_spin.setSuffix(" 秒")
+        llm_detail_row.addWidget(QLabel("key"))
+        llm_detail_row.addWidget(self.llm_api_key_edit, 1)
+        llm_detail_row.addWidget(QLabel("temp"))
+        llm_detail_row.addWidget(self.llm_temperature_spin)
+        llm_detail_row.addWidget(QLabel("max_tokens"))
+        llm_detail_row.addWidget(self.llm_max_tokens_spin)
+        llm_detail_row.addWidget(QLabel("timeout"))
+        llm_detail_row.addWidget(self.llm_timeout_spin)
+        llm_detail_w = QWidget(); llm_detail_w.setLayout(llm_detail_row)
+        form.addRow("LLM詳細", llm_detail_w)
+
+        self.llm_system_prompt_edit = QPlainTextEdit()
+        self.llm_system_prompt_edit.setPlaceholderText("ローカルLLM用system prompt（Grokブラウザ時は未使用）")
+        self.llm_system_prompt_edit.setMaximumHeight(70)
+        form.addRow("LLM system", self.llm_system_prompt_edit)
+
         self.sbv2_root_edit = QLineEdit()
         sbv2_btn = QPushButton("参照")
         sbv2_btn.clicked.connect(lambda: self._pick_dir(self.sbv2_root_edit, "SBV2フォルダ"))
@@ -2724,6 +2773,14 @@ class MainWindow(QMainWindow):
         self.faster_lang_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_beam_spin.valueChanged.connect(self._on_any_setting_changed)
         self.pipeline_python_edit.textChanged.connect(self._on_any_setting_changed)
+        self.llm_backend_combo.currentTextChanged.connect(self._on_any_setting_changed)
+        self.llm_base_url_edit.textChanged.connect(self._on_any_setting_changed)
+        self.llm_model_edit.textChanged.connect(self._on_any_setting_changed)
+        self.llm_api_key_edit.textChanged.connect(self._on_any_setting_changed)
+        self.llm_system_prompt_edit.textChanged.connect(self._on_any_setting_changed)
+        self.llm_temperature_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.llm_max_tokens_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.llm_timeout_spin.valueChanged.connect(self._on_any_setting_changed)
         self.sbv2_root_edit.textChanged.connect(self._on_any_setting_changed)
         self.video_metadata_edit.textChanged.connect(self._on_any_setting_changed)
         self.sbv2_mode_combo.currentTextChanged.connect(self._on_any_setting_changed)
@@ -2773,6 +2830,10 @@ class MainWindow(QMainWindow):
     def _is_recorder_needed(cfg: AppConfig) -> bool:
         mode = (cfg.source_mode or DEFAULT_SOURCE_MODE).strip().lower()
         return mode in ("mic", "both")
+
+    @staticmethod
+    def _llm_requires_chrome(cfg: AppConfig) -> bool:
+        return str(cfg.llm_backend or "grok_browser").strip().lower() == "grok_browser"
 
     # ---- 設定 ----
 
@@ -3214,8 +3275,8 @@ class MainWindow(QMainWindow):
         self.pause_btn.setEnabled(True)
         self._append_log(f"[session] start session_{self._run_session_id}")
 
-        # Selenium自動起動（未接続の場合）→ Workerで非同期実行後にパイプライン起動
-        if self._chrome_driver is None:
+        # Grok選択時だけSeleniumを起動する。ローカルLLMではChrome不要。
+        if self._llm_requires_chrome(cfg) and self._chrome_driver is None:
             port = self.chrome_port_spin.value()
             headless = self.chrome_headless_chk.isChecked()
             self._append_log("[selenium] バックグラウンドで起動中...")

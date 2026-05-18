@@ -34,6 +34,14 @@ class AppConfig:
     faster_language: str
     faster_beam: int
     pipeline_python: Path
+    llm_backend: str
+    llm_base_url: str
+    llm_model: str
+    llm_api_key: str
+    llm_system_prompt: str
+    llm_temperature: float
+    llm_max_tokens: int
+    llm_timeout_seconds: float
     sbv2_root: Path
     sbv2_model_name: str
     sbv2_model_file: str

@@ -75,6 +75,17 @@ def _normalize_sbv2_mode(value: object, default: str = "auto") -> str:
     return default
 
 
+def _normalize_llm_backend(value: object, default: str = "grok_browser") -> str:
+    token = str(value or "").strip().lower()
+    if token in ("grok", "browser"):
+        return "grok_browser"
+    if token in ("local", "local_llm", "openai_compatible", "lmstudio", "lm_studio", "ollama", "ollama_openai"):
+        return "local_openai"
+    if token in ("grok_browser", "local_openai"):
+        return token
+    return default
+
+
 def normalize_pipe_name(value: object, default: str = DEFAULT_PIPE_NAME) -> str:
     pipe_name = str(value or "").strip()
     prefix = "\\\\.\\pipe\\"
@@ -184,6 +195,19 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         faster_language=window.faster_lang_edit.text().strip() or "ja",
         faster_beam=max(1, int(window.faster_beam_spin.value())),
         pipeline_python=Path(window.pipeline_python_edit.text().strip()).expanduser().resolve(),
+        llm_backend=_normalize_llm_backend(
+            window.llm_backend_combo.currentData()
+            if window.llm_backend_combo.currentData() is not None
+            else window.llm_backend_combo.currentText(),
+            "grok_browser",
+        ),
+        llm_base_url=window.llm_base_url_edit.text().strip() or "http://127.0.0.1:1234/v1",
+        llm_model=window.llm_model_edit.text().strip(),
+        llm_api_key=window.llm_api_key_edit.text().strip(),
+        llm_system_prompt=window.llm_system_prompt_edit.toPlainText().strip(),
+        llm_temperature=float(window.llm_temperature_spin.value()),
+        llm_max_tokens=max(1, int(window.llm_max_tokens_spin.value())),
+        llm_timeout_seconds=max(1.0, float(window.llm_timeout_spin.value())),
         sbv2_root=Path(window.sbv2_root_edit.text().strip()).expanduser().resolve(),
         sbv2_model_name=window.model_name_combo.currentText().strip(),
         sbv2_model_file=window.model_file_edit.currentText().strip(),
@@ -284,6 +308,14 @@ def save_config(
         "faster_language": cfg.faster_language,
         "faster_beam": cfg.faster_beam,
         "pipeline_python": str(cfg.pipeline_python),
+        "llm_backend": cfg.llm_backend,
+        "llm_base_url": cfg.llm_base_url,
+        "llm_model": cfg.llm_model,
+        "llm_api_key": cfg.llm_api_key,
+        "llm_system_prompt": cfg.llm_system_prompt,
+        "llm_temperature": cfg.llm_temperature,
+        "llm_max_tokens": cfg.llm_max_tokens,
+        "llm_timeout_seconds": cfg.llm_timeout_seconds,
         "sbv2_root": str(cfg.sbv2_root),
         "sbv2_model_name": cfg.sbv2_model_name,
         "sbv2_model_file": cfg.sbv2_model_file,
@@ -390,6 +422,16 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.faster_lang_edit.setText(s("faster_language", window.faster_lang_edit.text()))
         window.faster_beam_spin.setValue(i("faster_beam", window.faster_beam_spin.value()))
         window.pipeline_python_edit.setText(s("pipeline_python", window.pipeline_python_edit.text()))
+        llm_backend = _normalize_llm_backend(data.get("llm_backend", "grok_browser"), "grok_browser")
+        llm_backend_index = max(0, window.llm_backend_combo.findData(llm_backend))
+        window.llm_backend_combo.setCurrentIndex(llm_backend_index)
+        window.llm_base_url_edit.setText(s("llm_base_url", window.llm_base_url_edit.text()))
+        window.llm_model_edit.setText(s("llm_model", window.llm_model_edit.text()))
+        window.llm_api_key_edit.setText(s("llm_api_key", window.llm_api_key_edit.text()))
+        window.llm_system_prompt_edit.setPlainText(s("llm_system_prompt", window.llm_system_prompt_edit.toPlainText()))
+        window.llm_temperature_spin.setValue(f("llm_temperature", window.llm_temperature_spin.value()))
+        window.llm_max_tokens_spin.setValue(i("llm_max_tokens", window.llm_max_tokens_spin.value()))
+        window.llm_timeout_spin.setValue(f("llm_timeout_seconds", window.llm_timeout_spin.value()))
         window.sbv2_root_edit.setText(s("sbv2_root", window.sbv2_root_edit.text()))
         window._reload_models()
         window.model_name_combo.setEditText(s("sbv2_model_name", ""))

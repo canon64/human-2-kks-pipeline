@@ -1237,6 +1237,17 @@ class PipelineWorker(QObject):
             "--pipe-name", self._cfg.pipe_name,
             "--main", str(self._cfg.main_index),
         ]
+        p_cmd.extend([
+            "--llm-backend", str(self._cfg.llm_backend or "grok_browser"),
+            "--llm-base-url", str(self._cfg.llm_base_url or "http://127.0.0.1:1234/v1"),
+            "--llm-model", str(self._cfg.llm_model or ""),
+            "--llm-api-key", str(self._cfg.llm_api_key or ""),
+            "--llm-temperature", str(self._cfg.llm_temperature),
+            "--llm-max-tokens", str(self._cfg.llm_max_tokens),
+            "--llm-timeout", str(self._cfg.llm_timeout_seconds),
+        ])
+        if str(self._cfg.llm_system_prompt or "").strip():
+            p_cmd.extend(["--llm-system-prompt", str(self._cfg.llm_system_prompt)])
         if self._cfg.voice_volume >= 0:
             p_cmd.extend(["--voice-volume", str(self._cfg.voice_volume)])
         if self._cfg.voice_pitch >= 0:
@@ -1309,6 +1320,10 @@ class PipelineWorker(QObject):
         self.log.emit(f"[pipeline] {label}: {text[:40]}")
         self.log.emit(
             f"[grok-limit] request max={response_limit} enabled={int(self._cfg.max_response_chars_enabled)} text_len={len(text or '')}"
+        )
+        self.log.emit(
+            f"[llm] backend={self._cfg.llm_backend or 'grok_browser'} "
+            f"model={self._cfg.llm_model or '(default)'}"
         )
         try:
             p_ret = self._run_cmd(p_cmd, timeout_sec=420.0)

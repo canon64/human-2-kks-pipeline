@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import load_or_create_config, resolve_config_path, runtime_base_dir
 from .io_utf8 import force_stdio_utf8, with_utf8_env
+from .llm_providers import LlmRequestConfig, generate_llm_response, normalize_backend
 from .logging_utils import setup_logger
 
 
@@ -128,6 +129,13 @@ def _normalize_pipe_name(value: Any) -> str:
     if not pipe_name or pipe_name.lower() == "kks_voice_face_events_diag_0423":
         return "kks_voice_face_events"
     return pipe_name
+
+
+def _safe_normalize_llm_backend(value: Any) -> str:
+    try:
+        return normalize_backend(str(value or "grok_browser"))
+    except Exception:
+        return str(value or "").strip()
 
 
 def _apply_conversion_rules(
@@ -432,11 +440,19 @@ def _tts_via_http_server(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Send text to Grok, synthesize JP-Extra speech per response line, merge WAV, and send event."
+        description="Send text to an LLM, synthesize JP-Extra speech per response line, merge WAV, and send event."
     )
-    parser.add_argument("--text", default="", help="Text to send to Grok.")
-    parser.add_argument("--response-text", default="", help="Use this as Grok response directly (skip Grok).")
-    parser.add_argument("--max-response-chars", type=int, default=3000, help="Maximum Grok response characters to process. Set 0 to disable limit.")
+    parser.add_argument("--text", default="", help="Text to send to the selected LLM.")
+    parser.add_argument("--response-text", default="", help="Use this as LLM response directly (skip LLM).")
+    parser.add_argument("--max-response-chars", type=int, default=3000, help="Maximum LLM response characters to process. Set 0 to disable limit.")
+    parser.add_argument("--llm-backend", default="grok_browser", help="LLM backend: grok_browser or local_openai.")
+    parser.add_argument("--llm-base-url", default="http://127.0.0.1:1234/v1", help="OpenAI-compatible local LLM base URL.")
+    parser.add_argument("--llm-model", default="", help="OpenAI-compatible local LLM model id.")
+    parser.add_argument("--llm-api-key", default="lm-studio", help="API key for local OpenAI-compatible server.")
+    parser.add_argument("--llm-system-prompt", default="", help="System prompt for local OpenAI-compatible server.")
+    parser.add_argument("--llm-temperature", type=float, default=0.7, help="Local LLM temperature.")
+    parser.add_argument("--llm-max-tokens", type=int, default=512, help="Local LLM max_tokens.")
+    parser.add_argument("--llm-timeout", type=float, default=120.0, help="Local LLM request timeout seconds.")
     parser.add_argument("--port", type=int, default=None, help="Chrome debug port (default from config).")
     parser.add_argument("--config", default=None, help="Grok bridge config path.")
     parser.add_argument("--timeout", type=float, default=None, help="Grok response timeout seconds.")
@@ -564,15 +580,24 @@ def main() -> int:
         if args.response_text.strip():
             source = "response-text"
             response_raw = args.response_text.strip()
-            logger.info("grok_skipped response_len=%d", len(response_raw))
+            logger.info("llm_skipped response_len=%d", len(response_raw))
         else:
-            source = "grok"
-            from .browser import connect_existing_debug_chrome
-            from .grok_client import send_text, wait_for_response
-
-            driver = connect_existing_debug_chrome(config.debug_port)
-            baseline, stop_before = send_text(driver, config, args.text, logger)
-            response_raw = wait_for_response(driver, config, logger, baseline, stop_before)
+            llm_cfg = LlmRequestConfig(
+                backend=args.llm_backend,
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                api_key=args.llm_api_key,
+                system_prompt=args.llm_system_prompt,
+                temperature=float(args.llm_temperature),
+                max_tokens=int(args.llm_max_tokens),
+                timeout_seconds=float(args.llm_timeout),
+            )
+            source, response_raw = generate_llm_response(
+                args.text,
+                llm_config=llm_cfg,
+                bridge_config=config,
+                logger=logger,
+            )
 
         response, response_raw_len, response_capped_len, response_truncated = _limit_response_text(
             response_raw,
@@ -919,6 +944,7 @@ def main() -> int:
                 "event_keep_current_face": event_keep_current_face,
                 "model_name": args.model_name,
                 "model_file": model_file_name,
+                "llm_backend": _safe_normalize_llm_backend(args.llm_backend),
             }
         )
         return 0
@@ -959,6 +985,7 @@ def main() -> int:
                 "event_keep_current_face": bool(args.keep_current_face),
                 "model_name": args.model_name,
                 "model_file": args.model_file,
+                "llm_backend": _safe_normalize_llm_backend(getattr(args, "llm_backend", "grok_browser")),
             }
         )
         return 1
