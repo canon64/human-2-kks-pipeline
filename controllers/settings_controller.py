@@ -245,6 +245,55 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         external_text_endpoint=window.external_text_endpoint_edit.text().strip() or "/manual-text",
         external_text_token=window.external_text_token_edit.text().strip(),
         external_text_dedupe_max=int(window.external_text_dedupe_spin.value()),
+        sd_prompt_begin_tag=window.sd_prompt_begin_tag_edit.text().strip() or "[SD_PROMPT_BEGIN]",
+        sd_prompt_end_tag=window.sd_prompt_end_tag_edit.text().strip() or "[SD_PROMPT_END]",
+        sd_prompt_send_enabled=bool(window.sd_prompt_send_chk.isChecked()),
+        sd_prompt_target_host=window.sd_prompt_host_edit.text().strip() or "127.0.0.1",
+        sd_prompt_target_port=int(window.sd_prompt_port_spin.value()),
+        sd_prompt_endpoint=window.sd_prompt_endpoint_edit.text().strip() or "/sd-prompt",
+        sd_prompt_token=window.sd_prompt_token_edit.text().strip(),
+        sd_prompt_timeout_sec=float(window.sd_prompt_timeout_spin.value()),
+        sd_prompt_generate_forever=bool(window.sd_prompt_forever_chk.isChecked()),
+        sd_control_port=int(window.sd_control_port_spin.value()),
+        sd_slideshow_interval_sec=int(window.sd_slideshow_interval_spin.value()),
+        sd_blankmap_sync_enabled=bool(window.sd_blankmap_sync_chk.isChecked()),
+        sd_blankmap_status_host=window.sd_blankmap_status_host_edit.text().strip() or "127.0.0.1",
+        sd_blankmap_status_port=int(window.sd_blankmap_status_port_spin.value()),
+        sd_blankmap_status_endpoint=window.sd_blankmap_status_endpoint_edit.text().strip() or "/slideshow/status",
+        sd_blankmap_status_timeout_sec=float(window.sd_blankmap_status_timeout_spin.value()),
+        sd_prompt_model_checkpoint=window.sd_prompt_model_checkpoint_edit.text().strip(),
+        sd_prompt_vae=window.sd_prompt_vae_edit.text().strip(),
+        sd_prompt_clip_skip=int(window.sd_prompt_clip_skip_spin.value()),
+        sd_prompt_append_prompt=window.sd_prompt_append_prompt_edit.toPlainText().strip(),
+        sd_prompt_negative_prompt=window.sd_prompt_negative_prompt_edit.toPlainText().strip(),
+        sd_prompt_steps=int(window.sd_prompt_steps_spin.value()),
+        sd_prompt_width=int(window.sd_prompt_width_spin.value()),
+        sd_prompt_height=int(window.sd_prompt_height_spin.value()),
+        sd_prompt_cfg_scale=float(window.sd_prompt_cfg_scale_spin.value()),
+        sd_prompt_sampler_name=window.sd_prompt_sampler_name_edit.text().strip(),
+        sd_prompt_scheduler=window.sd_prompt_scheduler_edit.text().strip(),
+        sd_prompt_seed=int(window.sd_prompt_seed_spin.value()),
+        sd_prompt_subseed=int(window.sd_prompt_subseed_spin.value()),
+        sd_prompt_subseed_strength=float(window.sd_prompt_subseed_strength_spin.value()),
+        sd_prompt_batch_size=int(window.sd_prompt_batch_size_spin.value()),
+        sd_prompt_n_iter=int(window.sd_prompt_n_iter_spin.value()),
+        sd_prompt_restore_faces=bool(window.sd_prompt_restore_faces_chk.isChecked()),
+        sd_prompt_tiling=bool(window.sd_prompt_tiling_chk.isChecked()),
+        sd_prompt_save_images=bool(window.sd_prompt_save_images_chk.isChecked()),
+        sd_prompt_send_images=bool(window.sd_prompt_send_images_chk.isChecked()),
+        sd_prompt_enable_hr=bool(window.sd_prompt_enable_hr_chk.isChecked()),
+        sd_prompt_hr_scale=float(window.sd_prompt_hr_scale_spin.value()),
+        sd_prompt_hr_upscaler=window.sd_prompt_hr_upscaler_edit.text().strip(),
+        sd_prompt_hr_second_pass_steps=int(window.sd_prompt_hr_second_pass_steps_spin.value()),
+        sd_prompt_denoising_strength=round(float(window.sd_prompt_denoising_strength_spin.value()), 2),
+        sd_prompt_hr_resize_x=int(window.sd_prompt_hr_resize_x_spin.value()),
+        sd_prompt_hr_resize_y=int(window.sd_prompt_hr_resize_y_spin.value()),
+        sd_prompt_hr_sampler_name=window.sd_prompt_hr_sampler_name_edit.text().strip(),
+        sd_prompt_hr_scheduler=window.sd_prompt_hr_scheduler_edit.text().strip(),
+        sd_prompt_hr_checkpoint_name=window.sd_prompt_hr_checkpoint_name_edit.text().strip(),
+        sd_prompt_hr_prompt=window.sd_prompt_hr_prompt_edit.toPlainText().strip(),
+        sd_prompt_hr_negative_prompt=window.sd_prompt_hr_negative_prompt_edit.toPlainText().strip(),
+        sd_prompt_extra_payload_json=window.sd_prompt_extra_payload_edit.toPlainText().strip(),
         max_response_chars_enabled=bool(window.max_response_chars_enabled_chk.isChecked()),
         max_response_chars=max(1, int(window.max_response_chars_spin.value())),
         transcribe_server_port=_read_transcribe_server_port(config_file),
@@ -350,6 +399,55 @@ def save_config(
         "external_text_endpoint": cfg.external_text_endpoint,
         "external_text_token": cfg.external_text_token,
         "external_text_dedupe_max": cfg.external_text_dedupe_max,
+        "sd_prompt_begin_tag": cfg.sd_prompt_begin_tag,
+        "sd_prompt_end_tag": cfg.sd_prompt_end_tag,
+        "sd_prompt_send_enabled": cfg.sd_prompt_send_enabled,
+        "sd_prompt_target_host": cfg.sd_prompt_target_host,
+        "sd_prompt_target_port": cfg.sd_prompt_target_port,
+        "sd_prompt_endpoint": cfg.sd_prompt_endpoint,
+        "sd_prompt_token": cfg.sd_prompt_token,
+        "sd_prompt_timeout_sec": cfg.sd_prompt_timeout_sec,
+        "sd_prompt_generate_forever": cfg.sd_prompt_generate_forever,
+        "sd_control_port": cfg.sd_control_port,
+        "sd_slideshow_interval_sec": cfg.sd_slideshow_interval_sec,
+        "sd_blankmap_sync_enabled": cfg.sd_blankmap_sync_enabled,
+        "sd_blankmap_status_host": cfg.sd_blankmap_status_host,
+        "sd_blankmap_status_port": cfg.sd_blankmap_status_port,
+        "sd_blankmap_status_endpoint": cfg.sd_blankmap_status_endpoint,
+        "sd_blankmap_status_timeout_sec": cfg.sd_blankmap_status_timeout_sec,
+        "sd_prompt_model_checkpoint": cfg.sd_prompt_model_checkpoint,
+        "sd_prompt_vae": cfg.sd_prompt_vae,
+        "sd_prompt_clip_skip": cfg.sd_prompt_clip_skip,
+        "sd_prompt_append_prompt": cfg.sd_prompt_append_prompt,
+        "sd_prompt_negative_prompt": cfg.sd_prompt_negative_prompt,
+        "sd_prompt_steps": cfg.sd_prompt_steps,
+        "sd_prompt_width": cfg.sd_prompt_width,
+        "sd_prompt_height": cfg.sd_prompt_height,
+        "sd_prompt_cfg_scale": cfg.sd_prompt_cfg_scale,
+        "sd_prompt_sampler_name": cfg.sd_prompt_sampler_name,
+        "sd_prompt_scheduler": cfg.sd_prompt_scheduler,
+        "sd_prompt_seed": cfg.sd_prompt_seed,
+        "sd_prompt_subseed": cfg.sd_prompt_subseed,
+        "sd_prompt_subseed_strength": cfg.sd_prompt_subseed_strength,
+        "sd_prompt_batch_size": cfg.sd_prompt_batch_size,
+        "sd_prompt_n_iter": cfg.sd_prompt_n_iter,
+        "sd_prompt_restore_faces": cfg.sd_prompt_restore_faces,
+        "sd_prompt_tiling": cfg.sd_prompt_tiling,
+        "sd_prompt_save_images": cfg.sd_prompt_save_images,
+        "sd_prompt_send_images": cfg.sd_prompt_send_images,
+        "sd_prompt_enable_hr": cfg.sd_prompt_enable_hr,
+        "sd_prompt_hr_scale": cfg.sd_prompt_hr_scale,
+        "sd_prompt_hr_upscaler": cfg.sd_prompt_hr_upscaler,
+        "sd_prompt_hr_second_pass_steps": cfg.sd_prompt_hr_second_pass_steps,
+        "sd_prompt_denoising_strength": cfg.sd_prompt_denoising_strength,
+        "sd_prompt_hr_resize_x": cfg.sd_prompt_hr_resize_x,
+        "sd_prompt_hr_resize_y": cfg.sd_prompt_hr_resize_y,
+        "sd_prompt_hr_sampler_name": cfg.sd_prompt_hr_sampler_name,
+        "sd_prompt_hr_scheduler": cfg.sd_prompt_hr_scheduler,
+        "sd_prompt_hr_checkpoint_name": cfg.sd_prompt_hr_checkpoint_name,
+        "sd_prompt_hr_prompt": cfg.sd_prompt_hr_prompt,
+        "sd_prompt_hr_negative_prompt": cfg.sd_prompt_hr_negative_prompt,
+        "sd_prompt_extra_payload_json": cfg.sd_prompt_extra_payload_json,
         "max_response_chars_enabled": cfg.max_response_chars_enabled,
         "max_response_chars": cfg.max_response_chars,
         "transcribe_server_port": cfg.transcribe_server_port,
@@ -473,6 +571,63 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.external_text_endpoint_edit.setText(s("external_text_endpoint", window.external_text_endpoint_edit.text()))
         window.external_text_token_edit.setText(s("external_text_token", ""))
         window.external_text_dedupe_spin.setValue(i("external_text_dedupe_max", window.external_text_dedupe_spin.value()))
+        sd_endpoint_saved = str(data.get("sd_prompt_endpoint", window.sd_prompt_endpoint_edit.text())).strip()
+        sd_port_saved = int(data.get("sd_prompt_target_port", window.sd_prompt_port_spin.value()) or window.sd_prompt_port_spin.value())
+        sd_host_saved = str(data.get("sd_prompt_target_host", window.sd_prompt_host_edit.text())).strip()
+        if sd_endpoint_saved == "/sd-prompt" and sd_port_saved == 18768:
+            sd_endpoint_saved = "/sdapi/v1/txt2img"
+            sd_port_saved = 7860
+            if sd_host_saved in ("", "127.0.0.1"):
+                sd_host_saved = "192.168.11.10"
+        window.sd_prompt_begin_tag_edit.setText(s("sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]") or "[SD_PROMPT_BEGIN]")
+        window.sd_prompt_end_tag_edit.setText(s("sd_prompt_end_tag", "[SD_PROMPT_END]") or "[SD_PROMPT_END]")
+        window.sd_prompt_send_chk.setChecked(b("sd_prompt_send_enabled", False))
+        window.sd_prompt_host_edit.setText(sd_host_saved or window.sd_prompt_host_edit.text())
+        window.sd_prompt_port_spin.setValue(sd_port_saved)
+        window.sd_prompt_endpoint_edit.setText(sd_endpoint_saved or window.sd_prompt_endpoint_edit.text())
+        window.sd_prompt_token_edit.setText(s("sd_prompt_token", ""))
+        window.sd_prompt_timeout_spin.setValue(i("sd_prompt_timeout_sec", window.sd_prompt_timeout_spin.value()))
+        window.sd_prompt_forever_chk.setChecked(b("sd_prompt_generate_forever", False))
+        window.sd_control_port_spin.setValue(i("sd_control_port", window.sd_control_port_spin.value()))
+        window.sd_slideshow_interval_spin.setValue(i("sd_slideshow_interval_sec", window.sd_slideshow_interval_spin.value()))
+        window.sd_blankmap_sync_chk.setChecked(b("sd_blankmap_sync_enabled", True))
+        window.sd_blankmap_status_host_edit.setText(s("sd_blankmap_status_host", window.sd_blankmap_status_host_edit.text()))
+        window.sd_blankmap_status_port_spin.setValue(i("sd_blankmap_status_port", window.sd_blankmap_status_port_spin.value()))
+        window.sd_blankmap_status_endpoint_edit.setText(s("sd_blankmap_status_endpoint", window.sd_blankmap_status_endpoint_edit.text()))
+        window.sd_blankmap_status_timeout_spin.setValue(f("sd_blankmap_status_timeout_sec", window.sd_blankmap_status_timeout_spin.value()))
+        window.sd_prompt_model_checkpoint_edit.setText(s("sd_prompt_model_checkpoint", ""))
+        window.sd_prompt_vae_edit.setText(s("sd_prompt_vae", ""))
+        window.sd_prompt_clip_skip_spin.setValue(i("sd_prompt_clip_skip", window.sd_prompt_clip_skip_spin.value()))
+        window.sd_prompt_append_prompt_edit.setPlainText(s("sd_prompt_append_prompt", ""))
+        window.sd_prompt_negative_prompt_edit.setPlainText(s("sd_prompt_negative_prompt", ""))
+        window.sd_prompt_steps_spin.setValue(i("sd_prompt_steps", window.sd_prompt_steps_spin.value()))
+        window.sd_prompt_width_spin.setValue(i("sd_prompt_width", window.sd_prompt_width_spin.value()))
+        window.sd_prompt_height_spin.setValue(i("sd_prompt_height", window.sd_prompt_height_spin.value()))
+        window.sd_prompt_cfg_scale_spin.setValue(f("sd_prompt_cfg_scale", window.sd_prompt_cfg_scale_spin.value()))
+        window.sd_prompt_sampler_name_edit.setText(s("sd_prompt_sampler_name", ""))
+        window.sd_prompt_scheduler_edit.setText(s("sd_prompt_scheduler", ""))
+        window.sd_prompt_seed_spin.setValue(i("sd_prompt_seed", window.sd_prompt_seed_spin.value()))
+        window.sd_prompt_subseed_spin.setValue(i("sd_prompt_subseed", window.sd_prompt_subseed_spin.value()))
+        window.sd_prompt_subseed_strength_spin.setValue(f("sd_prompt_subseed_strength", window.sd_prompt_subseed_strength_spin.value()))
+        window.sd_prompt_batch_size_spin.setValue(i("sd_prompt_batch_size", window.sd_prompt_batch_size_spin.value()))
+        window.sd_prompt_n_iter_spin.setValue(i("sd_prompt_n_iter", window.sd_prompt_n_iter_spin.value()))
+        window.sd_prompt_restore_faces_chk.setChecked(b("sd_prompt_restore_faces", False))
+        window.sd_prompt_tiling_chk.setChecked(b("sd_prompt_tiling", False))
+        window.sd_prompt_save_images_chk.setChecked(b("sd_prompt_save_images", True))
+        window.sd_prompt_send_images_chk.setChecked(b("sd_prompt_send_images", False))
+        window.sd_prompt_enable_hr_chk.setChecked(b("sd_prompt_enable_hr", False))
+        window.sd_prompt_hr_scale_spin.setValue(f("sd_prompt_hr_scale", window.sd_prompt_hr_scale_spin.value()))
+        window.sd_prompt_hr_upscaler_edit.setText(s("sd_prompt_hr_upscaler", window.sd_prompt_hr_upscaler_edit.text()))
+        window.sd_prompt_hr_second_pass_steps_spin.setValue(i("sd_prompt_hr_second_pass_steps", window.sd_prompt_hr_second_pass_steps_spin.value()))
+        window.sd_prompt_denoising_strength_spin.setValue(f("sd_prompt_denoising_strength", window.sd_prompt_denoising_strength_spin.value()))
+        window.sd_prompt_hr_resize_x_spin.setValue(i("sd_prompt_hr_resize_x", window.sd_prompt_hr_resize_x_spin.value()))
+        window.sd_prompt_hr_resize_y_spin.setValue(i("sd_prompt_hr_resize_y", window.sd_prompt_hr_resize_y_spin.value()))
+        window.sd_prompt_hr_sampler_name_edit.setText(s("sd_prompt_hr_sampler_name", ""))
+        window.sd_prompt_hr_scheduler_edit.setText(s("sd_prompt_hr_scheduler", ""))
+        window.sd_prompt_hr_checkpoint_name_edit.setText(s("sd_prompt_hr_checkpoint_name", ""))
+        window.sd_prompt_hr_prompt_edit.setPlainText(s("sd_prompt_hr_prompt", ""))
+        window.sd_prompt_hr_negative_prompt_edit.setPlainText(s("sd_prompt_hr_negative_prompt", ""))
+        window.sd_prompt_extra_payload_edit.setPlainText(s("sd_prompt_extra_payload_json", ""))
         window.max_response_chars_enabled_chk.setChecked(b("max_response_chars_enabled", True))
         window.max_response_chars_spin.setValue(i("max_response_chars", window.max_response_chars_spin.value()))
         window.max_response_chars_spin.setEnabled(window.max_response_chars_enabled_chk.isChecked())

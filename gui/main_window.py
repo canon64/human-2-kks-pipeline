@@ -83,6 +83,7 @@ from core.io_utils import (
     wav_duration_sec as _wav_duration_sec,
     with_utf8_env as _with_utf8_env,
 )
+from core.sd_prompt_bridge import send_a1111_txt2img
 from workers.pipeline_worker import PipelineWorker
 from workers.recorder_worker import RecorderWorker
 from workers.thread_workers import SeleniumWorker as _SeleniumWorker, TaskWorker as _TaskWorker
@@ -238,6 +239,7 @@ class MainWindow(QMainWindow):
         self._sbv2_test_last_wav: Optional[Path] = None
         self._sbv2_test_last_run_dir: Optional[Path] = None
         self._sbv2_test_no_send = False
+        self._sd_prompt_test_worker: Optional[_TaskWorker] = None
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
@@ -281,6 +283,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tabs)
         self._build_recorder_tab()
         self._build_pipeline_tab()
+        self._build_stable_diffusion_tab()
         self._build_test_tab()
         self._build_selenium_tab()
         self._build_transcribe_conversion_tab()
@@ -719,6 +722,227 @@ class MainWindow(QMainWindow):
         ext = QWidget(); ext.setLayout(ext_row)
         form.addRow("外部テキスト受信", ext)
 
+    def _build_stable_diffusion_tab(self) -> None:
+        inner = QWidget()
+        inner.setMinimumWidth(900)
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tabs.addTab(scroll, "StableDiffusion")
+        form = QFormLayout(inner)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+
+        endpoint_row = QHBoxLayout()
+        self.sd_prompt_send_chk = QCheckBox("自動送信")
+        self.sd_prompt_send_chk.setChecked(False)
+        self.sd_prompt_host_edit = QLineEdit("192.168.11.10")
+        self.sd_prompt_port_spin = _NoWheelPortSpinBox()
+        self.sd_prompt_port_spin.setRange(1, 65535); self.sd_prompt_port_spin.setValue(7860)
+        self.sd_prompt_endpoint_edit = QLineEdit("/sdapi/v1/txt2img")
+        self.sd_prompt_token_edit = QLineEdit()
+        self.sd_prompt_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sd_prompt_timeout_spin = _NoWheelSpinBox()
+        self.sd_prompt_timeout_spin.setRange(1, 600); self.sd_prompt_timeout_spin.setValue(40)
+        endpoint_row.addWidget(self.sd_prompt_send_chk)
+        endpoint_row.addWidget(QLabel("host")); endpoint_row.addWidget(self.sd_prompt_host_edit, 2)
+        endpoint_row.addWidget(QLabel("port")); endpoint_row.addWidget(self.sd_prompt_port_spin)
+        endpoint_row.addWidget(QLabel("endpoint")); endpoint_row.addWidget(self.sd_prompt_endpoint_edit, 2)
+        endpoint_row.addWidget(QLabel("token")); endpoint_row.addWidget(self.sd_prompt_token_edit)
+        endpoint_row.addWidget(QLabel("timeout")); endpoint_row.addWidget(self.sd_prompt_timeout_spin)
+        endpoint = QWidget(); endpoint.setLayout(endpoint_row)
+        form.addRow("A1111 API", endpoint)
+
+        forever_row = QHBoxLayout()
+        self.sd_prompt_forever_chk = QCheckBox("Generate forever")
+        self.sd_prompt_forever_chk.setChecked(False)
+        self.sd_prompt_forever_stop_btn = QPushButton("停止")
+        self.sd_control_port_spin = _NoWheelPortSpinBox()
+        self.sd_control_port_spin.setRange(1, 65535); self.sd_control_port_spin.setValue(18768)
+        self.sd_slideshow_interval_spin = _NoWheelSpinBox()
+        self.sd_slideshow_interval_spin.setRange(0, 600); self.sd_slideshow_interval_spin.setValue(20)
+        forever_row.addWidget(self.sd_prompt_forever_chk)
+        forever_row.addWidget(self.sd_prompt_forever_stop_btn)
+        forever_row.addStretch(1)
+        forever_row.addWidget(QLabel("fallback間隔(秒)")); forever_row.addWidget(self.sd_slideshow_interval_spin)
+        forever_row.addWidget(QLabel("制御ポート")); forever_row.addWidget(self.sd_control_port_spin)
+        forever = QWidget(); forever.setLayout(forever_row)
+        form.addRow("永続生成", forever)
+        self.sd_prompt_forever_stop_btn.clicked.connect(self._on_sd_forever_stop_clicked)
+        self.sd_prompt_forever_chk.toggled.connect(self._on_sd_forever_toggled)
+
+        tag_row = QHBoxLayout()
+        self.sd_prompt_begin_tag_edit = QLineEdit("[SD_PROMPT_BEGIN]")
+        self.sd_prompt_end_tag_edit = QLineEdit("[SD_PROMPT_END]")
+        tag_row.addWidget(QLabel("開始タグ")); tag_row.addWidget(self.sd_prompt_begin_tag_edit, 1)
+        tag_row.addWidget(QLabel("終了タグ")); tag_row.addWidget(self.sd_prompt_end_tag_edit, 1)
+        tag_widget = QWidget(); tag_widget.setLayout(tag_row)
+        form.addRow("プロンプトタグ", tag_widget)
+
+        blankmap_row = QHBoxLayout()
+        self.sd_blankmap_sync_chk = QCheckBox("BlankMapAdd同期")
+        self.sd_blankmap_sync_chk.setChecked(True)
+        self.sd_blankmap_status_host_edit = QLineEdit("127.0.0.1")
+        self.sd_blankmap_status_port_spin = _NoWheelPortSpinBox()
+        self.sd_blankmap_status_port_spin.setRange(1, 65535); self.sd_blankmap_status_port_spin.setValue(55782)
+        self.sd_blankmap_status_endpoint_edit = QLineEdit("/slideshow/status")
+        self.sd_blankmap_status_timeout_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.sd_blankmap_status_timeout_spin.setRange(0.2, 10.0); self.sd_blankmap_status_timeout_spin.setDecimals(1); self.sd_blankmap_status_timeout_spin.setSingleStep(0.1); self.sd_blankmap_status_timeout_spin.setValue(1.0)
+        blankmap_row.addWidget(self.sd_blankmap_sync_chk)
+        blankmap_row.addWidget(QLabel("host")); blankmap_row.addWidget(self.sd_blankmap_status_host_edit, 1)
+        blankmap_row.addWidget(QLabel("port")); blankmap_row.addWidget(self.sd_blankmap_status_port_spin)
+        blankmap_row.addWidget(QLabel("endpoint")); blankmap_row.addWidget(self.sd_blankmap_status_endpoint_edit, 2)
+        blankmap_row.addWidget(QLabel("timeout")); blankmap_row.addWidget(self.sd_blankmap_status_timeout_spin)
+        blankmap = QWidget(); blankmap.setLayout(blankmap_row)
+        form.addRow("BlankMapAdd", blankmap)
+
+        model_row = QHBoxLayout()
+        self.sd_prompt_model_checkpoint_edit = QLineEdit("")
+        self.sd_prompt_model_checkpoint_edit.setPlaceholderText("空欄=現在のWebUIモデル")
+        self.sd_prompt_vae_edit = QLineEdit("")
+        self.sd_prompt_vae_edit.setPlaceholderText("空欄=現在のVAE")
+        self.sd_prompt_clip_skip_spin = _NoWheelSpinBox()
+        self.sd_prompt_clip_skip_spin.setRange(0, 12); self.sd_prompt_clip_skip_spin.setValue(0)
+        model_row.addWidget(QLabel("checkpoint")); model_row.addWidget(self.sd_prompt_model_checkpoint_edit, 2)
+        model_row.addWidget(QLabel("vae")); model_row.addWidget(self.sd_prompt_vae_edit, 1)
+        model_row.addWidget(QLabel("clip skip")); model_row.addWidget(self.sd_prompt_clip_skip_spin)
+        model = QWidget(); model.setLayout(model_row)
+        form.addRow("モデル", model)
+
+        self.sd_prompt_append_prompt_edit = QPlainTextEdit()
+        self.sd_prompt_append_prompt_edit.setMaximumHeight(72)
+        self.sd_prompt_append_prompt_edit.setPlaceholderText("抽出したSDプロンプト末尾に追加するタグ")
+        form.addRow("追加プロンプト", self.sd_prompt_append_prompt_edit)
+
+        self.sd_prompt_negative_prompt_edit = QPlainTextEdit()
+        self.sd_prompt_negative_prompt_edit.setMaximumHeight(72)
+        self.sd_prompt_negative_prompt_edit.setPlaceholderText("negative prompt")
+        form.addRow("Negative", self.sd_prompt_negative_prompt_edit)
+
+        gen_row = QHBoxLayout()
+        self.sd_prompt_steps_spin = _NoWheelSpinBox()
+        self.sd_prompt_steps_spin.setRange(1, 300); self.sd_prompt_steps_spin.setValue(20)
+        self.sd_prompt_width_spin = _NoWheelSpinBox()
+        self.sd_prompt_width_spin.setRange(64, 4096); self.sd_prompt_width_spin.setSingleStep(64); self.sd_prompt_width_spin.setValue(512)
+        self.sd_prompt_height_spin = _NoWheelSpinBox()
+        self.sd_prompt_height_spin.setRange(64, 4096); self.sd_prompt_height_spin.setSingleStep(64); self.sd_prompt_height_spin.setValue(768)
+        self.sd_prompt_cfg_scale_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.sd_prompt_cfg_scale_spin.setRange(0.0, 50.0); self.sd_prompt_cfg_scale_spin.setDecimals(1); self.sd_prompt_cfg_scale_spin.setSingleStep(0.1); self.sd_prompt_cfg_scale_spin.setValue(7.0)
+        self.sd_prompt_sampler_name_edit = QLineEdit("")
+        self.sd_prompt_sampler_name_edit.setPlaceholderText("空欄=WebUI既定")
+        self.sd_prompt_scheduler_edit = QLineEdit("")
+        self.sd_prompt_scheduler_edit.setPlaceholderText("空欄=WebUI既定")
+        for label, widget in [
+            ("steps", self.sd_prompt_steps_spin),
+            ("width", self.sd_prompt_width_spin),
+            ("height", self.sd_prompt_height_spin),
+            ("cfg", self.sd_prompt_cfg_scale_spin),
+            ("sampler", self.sd_prompt_sampler_name_edit),
+            ("scheduler", self.sd_prompt_scheduler_edit),
+        ]:
+            gen_row.addWidget(QLabel(label)); gen_row.addWidget(widget)
+        gen = QWidget(); gen.setLayout(gen_row)
+        form.addRow("生成", gen)
+
+        seed_row = QHBoxLayout()
+        self.sd_prompt_seed_spin = _NoWheelSpinBox()
+        self.sd_prompt_seed_spin.setRange(-1, 2147483647); self.sd_prompt_seed_spin.setValue(-1)
+        self.sd_prompt_subseed_spin = _NoWheelSpinBox()
+        self.sd_prompt_subseed_spin.setRange(-1, 2147483647); self.sd_prompt_subseed_spin.setValue(-1)
+        self.sd_prompt_subseed_strength_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.sd_prompt_subseed_strength_spin.setRange(0.0, 1.0); self.sd_prompt_subseed_strength_spin.setDecimals(1); self.sd_prompt_subseed_strength_spin.setSingleStep(0.1); self.sd_prompt_subseed_strength_spin.setValue(0.0)
+        self.sd_prompt_batch_size_spin = _NoWheelSpinBox()
+        self.sd_prompt_batch_size_spin.setRange(1, 32); self.sd_prompt_batch_size_spin.setValue(1)
+        self.sd_prompt_n_iter_spin = _NoWheelSpinBox()
+        self.sd_prompt_n_iter_spin.setRange(1, 10000); self.sd_prompt_n_iter_spin.setValue(1)
+        seed_row.addWidget(QLabel("seed")); seed_row.addWidget(self.sd_prompt_seed_spin)
+        seed_row.addWidget(QLabel("subseed")); seed_row.addWidget(self.sd_prompt_subseed_spin)
+        seed_row.addWidget(QLabel("strength")); seed_row.addWidget(self.sd_prompt_subseed_strength_spin)
+        seed_row.addWidget(QLabel("batch")); seed_row.addWidget(self.sd_prompt_batch_size_spin)
+        seed_row.addWidget(QLabel("n_iter")); seed_row.addWidget(self.sd_prompt_n_iter_spin)
+        seed_row.addStretch(1)
+        seed = QWidget(); seed.setLayout(seed_row)
+        form.addRow("Seed/Batch", seed)
+
+        flags_row = QHBoxLayout()
+        self.sd_prompt_restore_faces_chk = QCheckBox("restore faces")
+        self.sd_prompt_tiling_chk = QCheckBox("tiling")
+        self.sd_prompt_save_images_chk = QCheckBox("save_images")
+        self.sd_prompt_save_images_chk.setChecked(True)
+        self.sd_prompt_send_images_chk = QCheckBox("send_images")
+        self.sd_prompt_send_images_chk.setChecked(False)
+        flags_row.addWidget(self.sd_prompt_restore_faces_chk)
+        flags_row.addWidget(self.sd_prompt_tiling_chk)
+        flags_row.addWidget(self.sd_prompt_save_images_chk)
+        flags_row.addWidget(self.sd_prompt_send_images_chk)
+        flags_row.addStretch(1)
+        flags = QWidget(); flags.setLayout(flags_row)
+        form.addRow("保存/その他", flags)
+
+        hr_row = QHBoxLayout()
+        self.sd_prompt_enable_hr_chk = QCheckBox("Hires.fix")
+        self.sd_prompt_hr_scale_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.sd_prompt_hr_scale_spin.setRange(1.0, 8.0); self.sd_prompt_hr_scale_spin.setDecimals(1); self.sd_prompt_hr_scale_spin.setSingleStep(0.1); self.sd_prompt_hr_scale_spin.setValue(2.0)
+        self.sd_prompt_hr_upscaler_edit = QLineEdit("Latent")
+        self.sd_prompt_hr_second_pass_steps_spin = _NoWheelSpinBox()
+        self.sd_prompt_hr_second_pass_steps_spin.setRange(0, 300); self.sd_prompt_hr_second_pass_steps_spin.setValue(0)
+        self.sd_prompt_denoising_strength_spin = _NoWheelAlwaysDoubleSpinBox()
+        self.sd_prompt_denoising_strength_spin.setRange(0.0, 1.0); self.sd_prompt_denoising_strength_spin.setDecimals(2); self.sd_prompt_denoising_strength_spin.setSingleStep(0.01); self.sd_prompt_denoising_strength_spin.setValue(0.45)
+        self.sd_prompt_hr_resize_x_spin = _NoWheelSpinBox()
+        self.sd_prompt_hr_resize_x_spin.setRange(0, 8192); self.sd_prompt_hr_resize_x_spin.setSingleStep(64); self.sd_prompt_hr_resize_x_spin.setValue(0)
+        self.sd_prompt_hr_resize_y_spin = _NoWheelSpinBox()
+        self.sd_prompt_hr_resize_y_spin.setRange(0, 8192); self.sd_prompt_hr_resize_y_spin.setSingleStep(64); self.sd_prompt_hr_resize_y_spin.setValue(0)
+        for label, widget in [
+            ("", self.sd_prompt_enable_hr_chk),
+            ("scale", self.sd_prompt_hr_scale_spin),
+            ("upscaler", self.sd_prompt_hr_upscaler_edit),
+            ("steps", self.sd_prompt_hr_second_pass_steps_spin),
+            ("denoise", self.sd_prompt_denoising_strength_spin),
+            ("resize_x", self.sd_prompt_hr_resize_x_spin),
+            ("resize_y", self.sd_prompt_hr_resize_y_spin),
+        ]:
+            if label:
+                hr_row.addWidget(QLabel(label))
+            hr_row.addWidget(widget)
+        hr = QWidget(); hr.setLayout(hr_row)
+        form.addRow("Hires.fix", hr)
+
+        hr_detail_row = QHBoxLayout()
+        self.sd_prompt_hr_sampler_name_edit = QLineEdit("")
+        self.sd_prompt_hr_scheduler_edit = QLineEdit("")
+        self.sd_prompt_hr_checkpoint_name_edit = QLineEdit("")
+        hr_detail_row.addWidget(QLabel("sampler")); hr_detail_row.addWidget(self.sd_prompt_hr_sampler_name_edit, 1)
+        hr_detail_row.addWidget(QLabel("scheduler")); hr_detail_row.addWidget(self.sd_prompt_hr_scheduler_edit, 1)
+        hr_detail_row.addWidget(QLabel("checkpoint")); hr_detail_row.addWidget(self.sd_prompt_hr_checkpoint_name_edit, 2)
+        hr_detail = QWidget(); hr_detail.setLayout(hr_detail_row)
+        form.addRow("Hires詳細", hr_detail)
+
+        self.sd_prompt_hr_prompt_edit = QPlainTextEdit()
+        self.sd_prompt_hr_prompt_edit.setMaximumHeight(60)
+        form.addRow("Hires prompt", self.sd_prompt_hr_prompt_edit)
+        self.sd_prompt_hr_negative_prompt_edit = QPlainTextEdit()
+        self.sd_prompt_hr_negative_prompt_edit.setMaximumHeight(60)
+        form.addRow("Hires negative", self.sd_prompt_hr_negative_prompt_edit)
+
+        self.sd_prompt_extra_payload_edit = QPlainTextEdit()
+        self.sd_prompt_extra_payload_edit.setMaximumHeight(90)
+        self.sd_prompt_extra_payload_edit.setPlaceholderText('{"alwayson_scripts": {...}}')
+        form.addRow("追加payload JSON", self.sd_prompt_extra_payload_edit)
+
+        self.sd_prompt_test_edit = QPlainTextEdit()
+        self.sd_prompt_test_edit.setMaximumHeight(90)
+        self.sd_prompt_test_edit.setPlaceholderText("masterpiece, best quality, 1girl, ...")
+        form.addRow("テストprompt", self.sd_prompt_test_edit)
+
+        test_row = QHBoxLayout()
+        self.sd_prompt_test_btn = QPushButton("SD送信テスト")
+        self.sd_prompt_test_btn.clicked.connect(self._run_sd_prompt_send_test)
+        self.sd_prompt_test_status_label = QLabel("待機")
+        test_row.addWidget(self.sd_prompt_test_btn)
+        test_row.addWidget(self.sd_prompt_test_status_label, 1)
+        test = QWidget(); test.setLayout(test_row)
+        form.addRow("テスト", test)
+
     def _build_test_tab(self) -> None:
         tab = QWidget()
         scroll = QScrollArea(); scroll.setWidget(tab); scroll.setWidgetResizable(True)
@@ -816,6 +1040,110 @@ class MainWindow(QMainWindow):
         sbv2_result_row.addWidget(sbv2_disp_panel, 1)
         sbv2_layout.addLayout(sbv2_result_row, 1)
         layout.addWidget(sbv2_group, 1)
+
+    def _send_test_prompt_to_sd_forever(self, prompt: str, source: str) -> bool:
+        prompt_text = str(prompt or "").strip()
+        if not prompt_text or not self.sd_prompt_forever_chk.isChecked():
+            return False
+        if self._pipeline_worker is None:
+            self._append_log(f"[sd-forever] {source}: パイプライン未起動")
+            return False
+        try:
+            self._pipeline_worker._cfg.sd_prompt_generate_forever = True
+            self._pipeline_worker._set_current_sd_prompt(prompt_text)
+            self._pipeline_worker._start_sd_forever_loop()
+            self._append_log(f"[sd-forever] {source}: テストpromptを永続生成へ反映 len={len(prompt_text)}")
+            return True
+        except Exception as exc:
+            self._append_log(f"[sd-forever] {source}: テストprompt反映失敗: {exc}")
+            return False
+
+    def _run_sd_prompt_send_test(self) -> None:
+        if self._sd_prompt_test_worker is not None and self._sd_prompt_test_worker.isRunning():
+            self.sd_prompt_test_status_label.setText("実行中...")
+            return
+        prompt = self.sd_prompt_test_edit.toPlainText().strip()
+        if not prompt:
+            self.sd_prompt_test_status_label.setText("プロンプト未入力")
+            return
+        if self.sd_prompt_forever_chk.isChecked():
+            if self._send_test_prompt_to_sd_forever(prompt, "sd-prompt-test"):
+                self.sd_prompt_test_status_label.setText("永続生成へ反映")
+            else:
+                self.sd_prompt_test_status_label.setText("永続生成へ反映失敗")
+            return
+        try:
+            cfg = self._build_config()
+        except Exception as exc:
+            self.sd_prompt_test_status_label.setText("設定エラー")
+            self._append_log(f"[sd-prompt-test] config error: {exc}")
+            return
+
+        self.sd_prompt_test_status_label.setText("送信中...")
+        self._append_log(
+            f"[sd-prompt-test] send target={cfg.sd_prompt_target_host}:{cfg.sd_prompt_target_port}{cfg.sd_prompt_endpoint} len={len(prompt)}"
+        )
+        self._sd_prompt_test_worker = _TaskWorker(
+            lambda: send_a1111_txt2img(
+                prompt=prompt,
+                host=cfg.sd_prompt_target_host,
+                port=cfg.sd_prompt_target_port,
+                endpoint=cfg.sd_prompt_endpoint,
+                token=cfg.sd_prompt_token,
+                timeout_sec=cfg.sd_prompt_timeout_sec,
+                model_checkpoint=cfg.sd_prompt_model_checkpoint,
+                vae=cfg.sd_prompt_vae,
+                clip_skip=cfg.sd_prompt_clip_skip,
+                append_prompt=cfg.sd_prompt_append_prompt,
+                negative_prompt=cfg.sd_prompt_negative_prompt,
+                steps=cfg.sd_prompt_steps,
+                width=cfg.sd_prompt_width,
+                height=cfg.sd_prompt_height,
+                cfg_scale=cfg.sd_prompt_cfg_scale,
+                sampler_name=cfg.sd_prompt_sampler_name,
+                scheduler=cfg.sd_prompt_scheduler,
+                seed=cfg.sd_prompt_seed,
+                subseed=cfg.sd_prompt_subseed,
+                subseed_strength=cfg.sd_prompt_subseed_strength,
+                batch_size=cfg.sd_prompt_batch_size,
+                n_iter=cfg.sd_prompt_n_iter,
+                restore_faces=cfg.sd_prompt_restore_faces,
+                tiling=cfg.sd_prompt_tiling,
+                save_images=cfg.sd_prompt_save_images,
+                send_images=cfg.sd_prompt_send_images,
+                enable_hr=cfg.sd_prompt_enable_hr,
+                hr_scale=cfg.sd_prompt_hr_scale,
+                hr_upscaler=cfg.sd_prompt_hr_upscaler,
+                hr_second_pass_steps=cfg.sd_prompt_hr_second_pass_steps,
+                denoising_strength=cfg.sd_prompt_denoising_strength,
+                hr_resize_x=cfg.sd_prompt_hr_resize_x,
+                hr_resize_y=cfg.sd_prompt_hr_resize_y,
+                hr_sampler_name=cfg.sd_prompt_hr_sampler_name,
+                hr_scheduler=cfg.sd_prompt_hr_scheduler,
+                hr_checkpoint_name=cfg.sd_prompt_hr_checkpoint_name,
+                hr_prompt=cfg.sd_prompt_hr_prompt,
+                hr_negative_prompt=cfg.sd_prompt_hr_negative_prompt,
+                extra_payload_json=cfg.sd_prompt_extra_payload_json,
+            ).to_dict()
+        )
+        self._sd_prompt_test_worker.result_ready.connect(self._on_sd_prompt_send_test_done)
+        self._sd_prompt_test_worker.error_occurred.connect(self._on_sd_prompt_send_test_error)
+        self._sd_prompt_test_worker.start()
+
+    def _on_sd_prompt_send_test_done(self, payload: object) -> None:
+        self._sd_prompt_test_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        ok = bool(data.get("ok", False))
+        status = int(data.get("status", 0) or 0)
+        url = str(data.get("url", "") or "")
+        error = str(data.get("error", "") or "")
+        self.sd_prompt_test_status_label.setText("送信成功" if ok else "送信失敗")
+        self._append_log(f"[sd-prompt-test] result ok={int(ok)} status={status} url={url} error={error[:160]}")
+
+    def _on_sd_prompt_send_test_error(self, err: str) -> None:
+        self._sd_prompt_test_worker = None
+        self.sd_prompt_test_status_label.setText("送信失敗")
+        self._append_log(f"[sd-prompt-test] error: {err}")
 
     def _on_sbv2_test_keep_face_toggled(self, checked: bool) -> None:
         self.sbv2_test_face_spin.setEnabled(not checked)
@@ -1400,6 +1728,56 @@ class MainWindow(QMainWindow):
             ])
             if cfg.target_token.strip():
                 cmd.extend(["--target-token", cfg.target_token.strip()])
+        if cfg.sd_prompt_send_enabled:
+            cmd.append("--sd-prompt-send-enabled")
+            cmd.extend([
+                "--sd-prompt-target-host", cfg.sd_prompt_target_host,
+                "--sd-prompt-target-port", str(cfg.sd_prompt_target_port),
+                "--sd-prompt-endpoint", cfg.sd_prompt_endpoint,
+                "--sd-prompt-timeout", str(cfg.sd_prompt_timeout_sec),
+                "--sd-prompt-model-checkpoint", cfg.sd_prompt_model_checkpoint,
+                "--sd-prompt-vae", cfg.sd_prompt_vae,
+                "--sd-prompt-clip-skip", str(cfg.sd_prompt_clip_skip),
+                "--sd-prompt-append-prompt", cfg.sd_prompt_append_prompt,
+                "--sd-prompt-negative-prompt", cfg.sd_prompt_negative_prompt,
+                "--sd-prompt-steps", str(cfg.sd_prompt_steps),
+                "--sd-prompt-width", str(cfg.sd_prompt_width),
+                "--sd-prompt-height", str(cfg.sd_prompt_height),
+                "--sd-prompt-cfg-scale", str(cfg.sd_prompt_cfg_scale),
+                "--sd-prompt-sampler-name", cfg.sd_prompt_sampler_name,
+                "--sd-prompt-scheduler", cfg.sd_prompt_scheduler,
+                "--sd-prompt-seed", str(cfg.sd_prompt_seed),
+                "--sd-prompt-subseed", str(cfg.sd_prompt_subseed),
+                "--sd-prompt-subseed-strength", str(cfg.sd_prompt_subseed_strength),
+                "--sd-prompt-batch-size", str(cfg.sd_prompt_batch_size),
+                "--sd-prompt-n-iter", str(cfg.sd_prompt_n_iter),
+                "--sd-prompt-hr-scale", str(cfg.sd_prompt_hr_scale),
+                "--sd-prompt-hr-upscaler", cfg.sd_prompt_hr_upscaler,
+                "--sd-prompt-hr-second-pass-steps", str(cfg.sd_prompt_hr_second_pass_steps),
+                "--sd-prompt-denoising-strength", str(cfg.sd_prompt_denoising_strength),
+                "--sd-prompt-hr-resize-x", str(cfg.sd_prompt_hr_resize_x),
+                "--sd-prompt-hr-resize-y", str(cfg.sd_prompt_hr_resize_y),
+                "--sd-prompt-hr-sampler-name", cfg.sd_prompt_hr_sampler_name,
+                "--sd-prompt-hr-scheduler", cfg.sd_prompt_hr_scheduler,
+                "--sd-prompt-hr-checkpoint-name", cfg.sd_prompt_hr_checkpoint_name,
+                "--sd-prompt-hr-prompt", cfg.sd_prompt_hr_prompt,
+                "--sd-prompt-hr-negative-prompt", cfg.sd_prompt_hr_negative_prompt,
+                "--sd-prompt-extra-payload-json", cfg.sd_prompt_extra_payload_json,
+            ])
+            if cfg.sd_prompt_token.strip():
+                cmd.extend(["--sd-prompt-token", cfg.sd_prompt_token.strip()])
+            if cfg.sd_prompt_restore_faces:
+                cmd.append("--sd-prompt-restore-faces")
+            if cfg.sd_prompt_tiling:
+                cmd.append("--sd-prompt-tiling")
+            if cfg.sd_prompt_save_images:
+                cmd.append("--sd-prompt-save-images")
+            if cfg.sd_prompt_send_images:
+                cmd.append("--sd-prompt-send-images")
+            if cfg.sd_prompt_enable_hr:
+                cmd.append("--sd-prompt-enable-hr")
+            if getattr(cfg, "sd_prompt_generate_forever", False):
+                cmd.append("--sd-skip-send")
         face_send_mode = str(getattr(cfg, "face_send_mode", "game_preset") or "game_preset").strip().lower()
         if face_send_mode not in ("game_preset", "preset_name", "preset_id"):
             face_send_mode = "game_preset"
@@ -1570,6 +1948,20 @@ class MainWindow(QMainWindow):
         self._append_log(f"[sbv2-test] original: {response_original[:80]}")
         self._append_log(f"[sbv2-test] send: {response_send[:80]}")
         self._append_log(f"[sbv2-test] display: {response_display[:80]}")
+        sd_prompt = str(data.get("sd_prompt", "") or "").strip()
+        if sd_prompt:
+            self._append_log(f"[sbv2-test][sd-prompt] detected len={len(sd_prompt)}")
+            if self._send_test_prompt_to_sd_forever(sd_prompt, "sbv2-test"):
+                self._append_log("[sbv2-test][sd-prompt] Generate foreverへ反映")
+            sd_result = data.get("sd_prompt_send_result", {})
+            if isinstance(sd_result, dict) and sd_result:
+                self._append_log(
+                    "[sbv2-test][sd-prompt] send "
+                    f"ok={int(bool(sd_result.get('ok', False)))} "
+                    f"status={int(sd_result.get('status', 0) or 0)} "
+                    f"url={str(sd_result.get('url', '') or '')} "
+                    f"error={str(sd_result.get('error', '') or '')[:120]}"
+                )
         merged_wav_raw = str(data.get("merged_wav", "") or "").strip()
         merged_wav = Path(merged_wav_raw).resolve() if merged_wav_raw else None
         line_wav_values = data.get("line_wavs", [])
@@ -1582,7 +1974,7 @@ class MainWindow(QMainWindow):
         ]
         audio_probe = merged_wav if merged_wav is not None and merged_wav.exists() else next((path for path in line_wavs if path.exists()), None)
         if audio_probe is None:
-            self.sbv2_test_status_label.setText("音声ファイルなし")
+            self.sbv2_test_status_label.setText("SD送信完了: 音声なし" if sd_prompt else "音声ファイルなし")
             self._append_log("[sbv2-test] audio wav not found")
             return
 
@@ -2818,6 +3210,55 @@ class MainWindow(QMainWindow):
         self.external_text_endpoint_edit.textChanged.connect(self._on_any_setting_changed)
         self.external_text_token_edit.textChanged.connect(self._on_any_setting_changed)
         self.external_text_dedupe_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_send_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_host_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_endpoint_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_token_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_timeout_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_forever_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_control_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_slideshow_interval_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_begin_tag_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_end_tag_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_blankmap_sync_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_blankmap_status_host_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_blankmap_status_port_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_blankmap_status_endpoint_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_blankmap_status_timeout_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_model_checkpoint_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_vae_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_clip_skip_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_append_prompt_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_negative_prompt_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_steps_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_width_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_height_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_cfg_scale_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_sampler_name_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_scheduler_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_seed_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_subseed_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_subseed_strength_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_batch_size_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_n_iter_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_restore_faces_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_tiling_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_save_images_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_send_images_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_enable_hr_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_scale_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_upscaler_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_second_pass_steps_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_denoising_strength_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_resize_x_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_resize_y_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_sampler_name_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_scheduler_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_checkpoint_name_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_prompt_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_hr_negative_prompt_edit.textChanged.connect(self._on_any_setting_changed)
+        self.sd_prompt_extra_payload_edit.textChanged.connect(self._on_any_setting_changed)
 
         # フィルター / 変換
         self.filter_table.itemChanged.connect(self._on_any_setting_changed)
@@ -3236,6 +3677,33 @@ class MainWindow(QMainWindow):
             self._stop_all()
         else:
             self._start_all()
+
+    def _on_sd_forever_stop_clicked(self) -> None:
+        # 即時: チェックを外してループ停止＋現在生成キャンセル
+        if self.sd_prompt_forever_chk.isChecked():
+            self.sd_prompt_forever_chk.setChecked(False)
+        if self._pipeline_worker is not None:
+            try:
+                self._pipeline_worker._stop_sd_forever(interrupt_current=True)
+                self._append_log("[sd-forever] 停止ボタン → ループ停止＆interrupt送信")
+            except Exception as exc:
+                self._append_log(f"[sd-forever] 停止失敗: {exc}")
+        else:
+            self._append_log("[sd-forever] パイプライン未起動")
+
+    def _on_sd_forever_toggled(self, checked: bool) -> None:
+        if self._pipeline_worker is None:
+            return
+        try:
+            self._pipeline_worker._cfg.sd_prompt_generate_forever = bool(checked)
+            if checked:
+                self._pipeline_worker._start_sd_forever_loop()
+                self._append_log("[sd-forever] ON (起動中のパイプラインへ反映)")
+            else:
+                self._pipeline_worker._stop_sd_forever(interrupt_current=True)
+                self._append_log("[sd-forever] OFF")
+        except Exception as exc:
+            self._append_log(f"[sd-forever] toggle 失敗: {exc}")
 
     def _on_pause_resume(self) -> None:
         if not self._paused:

@@ -18,6 +18,7 @@ from .config import load_or_create_config, resolve_config_path, runtime_base_dir
 from .io_utf8 import force_stdio_utf8, with_utf8_env
 from .llm_providers import LlmRequestConfig, generate_llm_response, normalize_backend
 from .logging_utils import setup_logger
+from core.sd_prompt_bridge import extract_sd_prompt_block, send_a1111_txt2img
 
 
 def _print_json(payload: dict[str, Any]) -> None:
@@ -505,6 +506,48 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-endpoint", default="/voice-face-event", help="Remote bridge endpoint path.")
     parser.add_argument("--target-token", default="", help="Remote bridge token sent via X-Auth-Token header.")
     parser.add_argument("--remote-http", action="store_true", help="Force HTTP bridge transport mode.")
+    parser.add_argument("--sd-prompt-begin-tag", default="[SD_PROMPT_BEGIN]", help="Begin marker for SD prompt block in LLM response.")
+    parser.add_argument("--sd-prompt-end-tag", default="[SD_PROMPT_END]", help="End marker for SD prompt block in LLM response.")
+    parser.add_argument("--sd-prompt-send-enabled", action="store_true", help="Send extracted Stable Diffusion prompt to a remote receiver.")
+    parser.add_argument("--sd-skip-send", action="store_true", help="Skip the in-process SD txt2img call. Used when pipeline_worker handles Generate forever loop.")
+    parser.add_argument("--sd-prompt-target-host", default="192.168.11.10", help="Stable Diffusion WebUI API host.")
+    parser.add_argument("--sd-prompt-target-port", type=int, default=7860, help="Stable Diffusion WebUI API port.")
+    parser.add_argument("--sd-prompt-endpoint", default="/sdapi/v1/txt2img", help="Stable Diffusion WebUI txt2img endpoint path.")
+    parser.add_argument("--sd-prompt-token", default="", help="SD prompt receiver token sent via X-Auth-Token header.")
+    parser.add_argument("--sd-prompt-timeout", type=float, default=5.0, help="SD prompt receiver timeout seconds.")
+    parser.add_argument("--sd-prompt-model-checkpoint", default="", help="A1111 sd_model_checkpoint to set before txt2img. Empty keeps current model.")
+    parser.add_argument("--sd-prompt-vae", default="", help="A1111 sd_vae to set before txt2img. Empty keeps current VAE.")
+    parser.add_argument("--sd-prompt-clip-skip", type=int, default=0, help="A1111 CLIP_stop_at_last_layers. 0 keeps current setting.")
+    parser.add_argument("--sd-prompt-append-prompt", default="", help="Prompt text appended to extracted SD prompt before txt2img.")
+    parser.add_argument("--sd-prompt-negative-prompt", default="", help="A1111 negative_prompt.")
+    parser.add_argument("--sd-prompt-steps", type=int, default=20, help="A1111 txt2img steps.")
+    parser.add_argument("--sd-prompt-width", type=int, default=512, help="A1111 txt2img width.")
+    parser.add_argument("--sd-prompt-height", type=int, default=768, help="A1111 txt2img height.")
+    parser.add_argument("--sd-prompt-cfg-scale", type=float, default=7.0, help="A1111 cfg_scale.")
+    parser.add_argument("--sd-prompt-sampler-name", default="", help="A1111 sampler_name. Empty keeps default.")
+    parser.add_argument("--sd-prompt-scheduler", default="", help="A1111 scheduler. Empty keeps default.")
+    parser.add_argument("--sd-prompt-seed", type=int, default=-1, help="A1111 seed.")
+    parser.add_argument("--sd-prompt-subseed", type=int, default=-1, help="A1111 subseed.")
+    parser.add_argument("--sd-prompt-subseed-strength", type=float, default=0.0, help="A1111 subseed_strength.")
+    parser.add_argument("--sd-prompt-batch-size", type=int, default=1, help="A1111 batch_size.")
+    parser.add_argument("--sd-prompt-n-iter", type=int, default=1, help="A1111 n_iter.")
+    parser.add_argument("--sd-prompt-restore-faces", action="store_true", help="A1111 restore_faces.")
+    parser.add_argument("--sd-prompt-tiling", action="store_true", help="A1111 tiling.")
+    parser.add_argument("--sd-prompt-save-images", action="store_true", help="A1111 save_images.")
+    parser.add_argument("--sd-prompt-send-images", action="store_true", help="A1111 send_images.")
+    parser.add_argument("--sd-prompt-enable-hr", action="store_true", help="A1111 Hires.fix enable_hr.")
+    parser.add_argument("--sd-prompt-hr-scale", type=float, default=2.0, help="A1111 hr_scale.")
+    parser.add_argument("--sd-prompt-hr-upscaler", default="Latent", help="A1111 hr_upscaler.")
+    parser.add_argument("--sd-prompt-hr-second-pass-steps", type=int, default=0, help="A1111 hr_second_pass_steps.")
+    parser.add_argument("--sd-prompt-denoising-strength", type=float, default=0.45, help="A1111 denoising_strength.")
+    parser.add_argument("--sd-prompt-hr-resize-x", type=int, default=0, help="A1111 hr_resize_x.")
+    parser.add_argument("--sd-prompt-hr-resize-y", type=int, default=0, help="A1111 hr_resize_y.")
+    parser.add_argument("--sd-prompt-hr-sampler-name", default="", help="A1111 hr_sampler_name.")
+    parser.add_argument("--sd-prompt-hr-scheduler", default="", help="A1111 hr_scheduler.")
+    parser.add_argument("--sd-prompt-hr-checkpoint-name", default="", help="A1111 hr_checkpoint_name.")
+    parser.add_argument("--sd-prompt-hr-prompt", default="", help="A1111 hr_prompt.")
+    parser.add_argument("--sd-prompt-hr-negative-prompt", default="", help="A1111 hr_negative_prompt.")
+    parser.add_argument("--sd-prompt-extra-payload-json", default="", help="Extra A1111 txt2img payload JSON object merged last.")
     parser.add_argument("--main", type=int, default=0, help="Main index for event payload.")
     parser.add_argument("--face", type=int, default=-1, help="Face id for event payload. -1 to keep default behavior.")
     parser.add_argument("--keep-current-face", action="store_true", help="Send keepCurrentFace flag with event.")
@@ -599,8 +642,67 @@ def main() -> int:
                 logger=logger,
             )
 
-        response, response_raw_len, response_capped_len, response_truncated = _limit_response_text(
+        response_without_sd, sd_prompt = extract_sd_prompt_block(
             response_raw,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
+        sd_prompt_send_result: dict[str, Any] = {}
+        if sd_prompt:
+            logger.info("sd_prompt_detected len=%d", len(sd_prompt))
+            if args.sd_prompt_send_enabled and not args.sd_skip_send:
+                result = send_a1111_txt2img(
+                    prompt=sd_prompt,
+                    host=args.sd_prompt_target_host,
+                    port=int(args.sd_prompt_target_port),
+                    endpoint=args.sd_prompt_endpoint,
+                    token=args.sd_prompt_token,
+                    timeout_sec=float(args.sd_prompt_timeout),
+                    model_checkpoint=args.sd_prompt_model_checkpoint,
+                    vae=args.sd_prompt_vae,
+                    clip_skip=int(args.sd_prompt_clip_skip),
+                    append_prompt=args.sd_prompt_append_prompt,
+                    negative_prompt=args.sd_prompt_negative_prompt,
+                    steps=int(args.sd_prompt_steps),
+                    width=int(args.sd_prompt_width),
+                    height=int(args.sd_prompt_height),
+                    cfg_scale=float(args.sd_prompt_cfg_scale),
+                    sampler_name=args.sd_prompt_sampler_name,
+                    scheduler=args.sd_prompt_scheduler,
+                    seed=int(args.sd_prompt_seed),
+                    subseed=int(args.sd_prompt_subseed),
+                    subseed_strength=float(args.sd_prompt_subseed_strength),
+                    batch_size=int(args.sd_prompt_batch_size),
+                    n_iter=int(args.sd_prompt_n_iter),
+                    restore_faces=bool(args.sd_prompt_restore_faces),
+                    tiling=bool(args.sd_prompt_tiling),
+                    save_images=bool(args.sd_prompt_save_images),
+                    send_images=bool(args.sd_prompt_send_images),
+                    enable_hr=bool(args.sd_prompt_enable_hr),
+                    hr_scale=float(args.sd_prompt_hr_scale),
+                    hr_upscaler=args.sd_prompt_hr_upscaler,
+                    hr_second_pass_steps=int(args.sd_prompt_hr_second_pass_steps),
+                    denoising_strength=float(args.sd_prompt_denoising_strength),
+                    hr_resize_x=int(args.sd_prompt_hr_resize_x),
+                    hr_resize_y=int(args.sd_prompt_hr_resize_y),
+                    hr_sampler_name=args.sd_prompt_hr_sampler_name,
+                    hr_scheduler=args.sd_prompt_hr_scheduler,
+                    hr_checkpoint_name=args.sd_prompt_hr_checkpoint_name,
+                    hr_prompt=args.sd_prompt_hr_prompt,
+                    hr_negative_prompt=args.sd_prompt_hr_negative_prompt,
+                    extra_payload_json=args.sd_prompt_extra_payload_json,
+                )
+                sd_prompt_send_result = result.to_dict()
+                logger.info(
+                    "sd_prompt_send ok=%d status=%d url=%s error=%s",
+                    int(result.ok),
+                    result.status,
+                    result.url,
+                    result.error,
+                )
+        response_raw_for_tts = response_without_sd
+        response, response_raw_len, response_capped_len, response_truncated = _limit_response_text(
+            response_raw_for_tts,
             max_chars=args.max_response_chars,
             logger=logger,
             source=source,
@@ -649,6 +751,52 @@ def main() -> int:
             len(lines),
             max_line_chars,
         )
+        if not lines and sd_prompt:
+            _print_json(
+                {
+                    "ok": True,
+                    "error": "",
+                    "response": "",
+                    "response_original": "",
+                    "response_display": "",
+                    "response_raw_length": response_raw_len,
+                    "response_capped_length": response_capped_len,
+                    "response_truncated": response_truncated,
+                    "max_response_chars": int(args.max_response_chars),
+                    "line_count": 0,
+                    "line_texts": [],
+                    "display_line_texts": [],
+                    "line_wavs": [],
+                    "line_durations": [],
+                    "total_wav_duration": 0.0,
+                    "merged_wav": "",
+                    "response_file": "",
+                    "event_sent": False,
+                    "event_send_mode": args.event_send_mode,
+                    "sequence_sent": False,
+                    "sequence_session_id": "",
+                    "sequence_event_file": "",
+                    "event_stdout": "",
+                    "event_stderr": "",
+                    "event_face_send_mode": _normalize_face_send_mode(args.face_send_mode),
+                    "event_face_preset_name": str(args.face_preset_name or "").strip(),
+                    "event_face_preset_id": str(args.face_preset_id or "").strip(),
+                    "event_face_preset_random": bool(args.face_preset_random),
+                    "event_face_selected_name": "",
+                    "event_face_selected_id": "",
+                    "event_face": int(args.face),
+                    "event_keep_current_face": bool(args.keep_current_face),
+                    "model_name": args.model_name,
+                    "model_file": args.model_file,
+                    "llm_backend": _safe_normalize_llm_backend(args.llm_backend),
+                    "sd_prompt_detected": True,
+                    "sd_prompt": sd_prompt,
+                    "sd_prompt_length": len(sd_prompt),
+                    "sd_prompt_send_enabled": bool(args.sd_prompt_send_enabled),
+                    "sd_prompt_send_result": sd_prompt_send_result,
+                }
+            )
+            return 0
         if not lines:
             raise RuntimeError("Grok response is empty.")
 
@@ -945,6 +1093,11 @@ def main() -> int:
                 "model_name": args.model_name,
                 "model_file": model_file_name,
                 "llm_backend": _safe_normalize_llm_backend(args.llm_backend),
+                "sd_prompt_detected": bool(sd_prompt),
+                "sd_prompt": sd_prompt,
+                "sd_prompt_length": len(sd_prompt),
+                "sd_prompt_send_enabled": bool(args.sd_prompt_send_enabled),
+                "sd_prompt_send_result": sd_prompt_send_result,
             }
         )
         return 0
@@ -986,6 +1139,11 @@ def main() -> int:
                 "model_name": args.model_name,
                 "model_file": args.model_file,
                 "llm_backend": _safe_normalize_llm_backend(getattr(args, "llm_backend", "grok_browser")),
+                "sd_prompt_detected": bool(locals().get("sd_prompt", "")),
+                "sd_prompt": str(locals().get("sd_prompt", "") or ""),
+                "sd_prompt_length": len(str(locals().get("sd_prompt", "") or "")),
+                "sd_prompt_send_enabled": bool(getattr(args, "sd_prompt_send_enabled", False)),
+                "sd_prompt_send_result": dict(locals().get("sd_prompt_send_result", {}) or {}),
             }
         )
         return 1

@@ -1,0 +1,21 @@
+{
+  "listen_host": "0.0.0.0",
+  "listen_port": 18768,
+  "endpoint": "/sd-prompt",
+  "token": "",
+  "sd_webui_url": "http://127.0.0.1:7860",
+  "sd_api_path": "/sdapi/v1/txt2img",
+  "sd_timeout_sec": 180.0,
+  "save_response_images": true,
+  "output_dir": "outputs/sd_receiver",
+  "default_payload": {
+    "negative_prompt": "",
+    "steps": 20,
+    "width": 768,
+    "height": 1024,
+    "cfg_scale": 7.0,
+    "batch_size": 1,
+    "n_iter": 1,
+    "save_images": true
+  }
+}

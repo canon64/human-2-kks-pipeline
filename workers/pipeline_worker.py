@@ -28,6 +28,7 @@ from core.io_utils import (
     wav_duration_sec as _wav_duration_sec,
     with_utf8_env as _with_utf8_env,
 )
+from core.sd_prompt_bridge import append_sd_prompt_instruction
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -61,6 +62,14 @@ class PipelineWorker(QObject):
         self._external_id_queue: deque[str] = deque()
         self._external_id_set: set[str] = set()
         self._external_lock = threading.Lock()
+        # Generate forever (SD) state
+        self._sd_forever_running = False
+        self._sd_forever_thread: Optional[threading.Thread] = None
+        self._current_sd_prompt: str = ""
+        self._sd_prompt_lock = threading.Lock()
+        self._sd_iteration: int = 0
+        self._sd_control_server: Optional[ThreadingHTTPServer] = None
+        self._sd_control_thread: Optional[threading.Thread] = None
         self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         # song_kana_map / video_metadata
         _data_dir = PROJECT_ROOT / "data"
@@ -174,6 +183,8 @@ class PipelineWorker(QObject):
 
     def stop(self) -> None:
         self._running = False
+        self._stop_sd_forever(interrupt_current=True)
+        self._stop_sd_control_server()
         if self._observer is not None:
             self._observer.stop()
         self._stop_external_text_server()
@@ -407,6 +418,349 @@ class PipelineWorker(QObject):
                 pass
             self._external_server = None
 
+    # ---------------------------------------------------------------- SD Generate forever
+    def _set_current_sd_prompt(self, prompt: str) -> None:
+        text = str(prompt or "").strip()
+        with self._sd_prompt_lock:
+            self._current_sd_prompt = text
+            self._sd_iteration += 1
+        if text:
+            self.log.emit(f"[sd-forever] prompt updated len={len(text)} iter={self._sd_iteration}")
+
+    def _start_sd_forever_loop(self) -> None:
+        if not getattr(self._cfg, "sd_prompt_generate_forever", False):
+            self.log.emit("[sd-forever] disabled")
+            return
+        if self._sd_forever_thread is not None and self._sd_forever_thread.is_alive():
+            return
+        self._sd_forever_running = True
+        self._sd_forever_thread = threading.Thread(
+            target=self._sd_forever_worker, daemon=True, name="sd-forever"
+        )
+        self._sd_forever_thread.start()
+        self.log.emit("[sd-forever] loop started")
+
+    def _stop_sd_forever(self, interrupt_current: bool = True) -> None:
+        self._sd_forever_running = False
+        if interrupt_current:
+            try:
+                from core.sd_prompt_bridge import post_a1111_interrupt
+                res = post_a1111_interrupt(
+                    host=str(self._cfg.sd_prompt_target_host or ""),
+                    port=int(self._cfg.sd_prompt_target_port or 7860),
+                    token=str(self._cfg.sd_prompt_token or ""),
+                    timeout_sec=3.0,
+                )
+                self.log.emit(f"[sd-forever] stop interrupt ok={int(res.ok)} status={res.status} err={res.error[:120]}")
+            except Exception as exc:
+                self.log.emit(f"[sd-forever] stop interrupt error: {exc}")
+        with self._sd_prompt_lock:
+            self._current_sd_prompt = ""
+        self.log.emit("[sd-forever] loop stopped")
+
+    def _fetch_blankmap_slideshow_status(self) -> dict:
+        host = str(getattr(self._cfg, "sd_blankmap_status_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = max(1, min(65535, int(getattr(self._cfg, "sd_blankmap_status_port", 55782) or 55782)))
+        endpoint = str(getattr(self._cfg, "sd_blankmap_status_endpoint", "/slideshow/status") or "/slideshow/status").strip()
+        if not endpoint.startswith("/"):
+            endpoint = "/" + endpoint
+        if host.startswith("http://") or host.startswith("https://"):
+            url = host.rstrip("/") + endpoint
+        else:
+            url = f"http://{host}:{port}{endpoint}"
+        timeout = max(0.2, float(getattr(self._cfg, "sd_blankmap_status_timeout_sec", 1.0) or 1.0))
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                status_code = int(getattr(resp, "status", 200))
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("status response is not a JSON object")
+        except Exception as exc:
+            return {"ok": False, "url": url, "error": str(exc)}
+
+        def pick(*keys: str, default=None):
+            for key in keys:
+                if key in data:
+                    return data.get(key)
+            return default
+
+        return {
+            "ok": bool(pick("ok", "Ok", default=(200 <= status_code < 300))),
+            "url": url,
+            "enabled": bool(pick("enabled", "Enabled", default=False)),
+            "folder": str(pick("folder", "Folder", default="") or ""),
+            "current_path": str(pick("current_path", "CurrentPath", default="") or ""),
+            "pending_path": str(pick("pending_path", "PendingPath", default="") or ""),
+            "transition_path": str(pick("transition_path", "TransitionPath", default="") or ""),
+            "transition_active": bool(pick("transition_active", "TransitionActive", default=False)),
+            "count": int(pick("count", "Count", default=0) or 0),
+            "seconds": float(pick("seconds", "Seconds", default=0.0) or 0.0),
+            "scan_interval_sec": float(pick("scan_interval_sec", "ScanIntervalSec", default=1.0) or 1.0),
+            "next_slide_in_sec": float(pick("next_slide_in_sec", "NextSlideInSec", default=0.0) or 0.0),
+        }
+
+    def _sd_forever_worker(self) -> None:
+        from core.sd_prompt_bridge import send_a1111_txt2img, post_a1111_interrupt
+
+        last_send_started_at: float = 0.0
+        last_prompt_iter = -1
+        waiting_for_slideshow_consume = False
+        waiting_base_current_path = ""
+        last_status_error = ""
+        last_wait_log_at = 0.0
+
+        def _do_send(prompt_text: str, iter_at_start: int) -> bool:
+            try:
+                result = send_a1111_txt2img(
+                    prompt=prompt_text,
+                    host=str(self._cfg.sd_prompt_target_host or ""),
+                    port=int(self._cfg.sd_prompt_target_port or 7860),
+                    endpoint=str(self._cfg.sd_prompt_endpoint or "/sdapi/v1/txt2img"),
+                    token=str(self._cfg.sd_prompt_token or ""),
+                    timeout_sec=float(self._cfg.sd_prompt_timeout_sec or 40.0),
+                    model_checkpoint=str(self._cfg.sd_prompt_model_checkpoint or ""),
+                    vae=str(self._cfg.sd_prompt_vae or ""),
+                    clip_skip=int(self._cfg.sd_prompt_clip_skip or 0),
+                    append_prompt=str(self._cfg.sd_prompt_append_prompt or ""),
+                    negative_prompt=str(self._cfg.sd_prompt_negative_prompt or ""),
+                    steps=int(self._cfg.sd_prompt_steps or 20),
+                    width=int(self._cfg.sd_prompt_width or 512),
+                    height=int(self._cfg.sd_prompt_height or 768),
+                    cfg_scale=float(self._cfg.sd_prompt_cfg_scale or 7.0),
+                    sampler_name=str(self._cfg.sd_prompt_sampler_name or ""),
+                    scheduler=str(self._cfg.sd_prompt_scheduler or ""),
+                    seed=int(self._cfg.sd_prompt_seed if self._cfg.sd_prompt_seed is not None else -1),
+                    subseed=int(self._cfg.sd_prompt_subseed if self._cfg.sd_prompt_subseed is not None else -1),
+                    subseed_strength=float(self._cfg.sd_prompt_subseed_strength or 0.0),
+                    batch_size=int(self._cfg.sd_prompt_batch_size or 1),
+                    n_iter=int(self._cfg.sd_prompt_n_iter or 1),
+                    restore_faces=bool(self._cfg.sd_prompt_restore_faces),
+                    tiling=bool(self._cfg.sd_prompt_tiling),
+                    save_images=bool(self._cfg.sd_prompt_save_images),
+                    send_images=bool(self._cfg.sd_prompt_send_images),
+                    enable_hr=bool(self._cfg.sd_prompt_enable_hr),
+                    hr_scale=float(self._cfg.sd_prompt_hr_scale or 2.0),
+                    hr_upscaler=str(self._cfg.sd_prompt_hr_upscaler or "Latent"),
+                    hr_second_pass_steps=int(self._cfg.sd_prompt_hr_second_pass_steps or 0),
+                    denoising_strength=float(self._cfg.sd_prompt_denoising_strength or 0.45),
+                    hr_resize_x=int(self._cfg.sd_prompt_hr_resize_x or 0),
+                    hr_resize_y=int(self._cfg.sd_prompt_hr_resize_y or 0),
+                    hr_sampler_name=str(self._cfg.sd_prompt_hr_sampler_name or ""),
+                    hr_scheduler=str(self._cfg.sd_prompt_hr_scheduler or ""),
+                    hr_checkpoint_name=str(self._cfg.sd_prompt_hr_checkpoint_name or ""),
+                    hr_prompt=str(self._cfg.sd_prompt_hr_prompt or ""),
+                    hr_negative_prompt=str(self._cfg.sd_prompt_hr_negative_prompt or ""),
+                    extra_payload_json=str(self._cfg.sd_prompt_extra_payload_json or ""),
+                )
+                self.log.emit(
+                    f"[sd-forever] send iter={iter_at_start} ok={int(result.ok)} status={result.status} err={result.error[:120]}"
+                )
+                return bool(result.ok)
+            except Exception as exc:
+                self.log.emit(f"[sd-forever] send error iter={iter_at_start}: {exc}")
+                return False
+
+        while self._sd_forever_running and self._running:
+            with self._sd_prompt_lock:
+                prompt = self._current_sd_prompt
+                iter_at_start = self._sd_iteration
+            if not prompt:
+                time.sleep(0.5)
+                continue
+
+            prompt_changed = iter_at_start != last_prompt_iter
+            if prompt_changed:
+                waiting_for_slideshow_consume = False
+                waiting_base_current_path = ""
+                last_prompt_iter = iter_at_start
+
+            sync_enabled = bool(getattr(self._cfg, "sd_blankmap_sync_enabled", True))
+            status_current_path = ""
+            if sync_enabled:
+                status = self._fetch_blankmap_slideshow_status()
+                if not status.get("ok", False):
+                    err = str(status.get("error", "") or "status failed")
+                    if err != last_status_error:
+                        self.log.emit(f"[sd-forever] BlankMapAdd status failed url={status.get('url', '')} err={err[:160]}")
+                        last_status_error = err
+                    time.sleep(2.0)
+                    continue
+                last_status_error = ""
+
+                status_current_path = str(status.get("current_path", "") or "")
+                pending_path = str(status.get("pending_path", "") or "")
+                transition_path = str(status.get("transition_path", "") or "")
+                scan_interval = max(0.5, min(5.0, float(status.get("scan_interval_sec", 1.0) or 1.0)))
+
+                if not bool(status.get("enabled", False)):
+                    now = time.monotonic()
+                    if now - last_wait_log_at >= 10.0:
+                        self.log.emit("[sd-forever] BlankMapAdd slideshow disabled; generation paused")
+                        last_wait_log_at = now
+                    time.sleep(scan_interval)
+                    continue
+
+                if waiting_for_slideshow_consume:
+                    consumed = False
+                    if waiting_base_current_path and status_current_path and status_current_path != waiting_base_current_path:
+                        consumed = True
+                    elif (not waiting_base_current_path) and status_current_path:
+                        consumed = True
+                    if consumed:
+                        waiting_for_slideshow_consume = False
+                        waiting_base_current_path = ""
+                        self.log.emit(f"[sd-forever] slideshow consumed current={status_current_path}")
+
+                if waiting_for_slideshow_consume:
+                    now = time.monotonic()
+                    if now - last_wait_log_at >= 10.0:
+                        self.log.emit(
+                            f"[sd-forever] waiting slideshow consume current={status_current_path or '(empty)'} pending={pending_path or '(empty)'}"
+                        )
+                        last_wait_log_at = now
+                    time.sleep(scan_interval)
+                    continue
+
+                if (not prompt_changed) and (pending_path or transition_path):
+                    now = time.monotonic()
+                    if now - last_wait_log_at >= 10.0:
+                        self.log.emit(
+                            f"[sd-forever] pending image exists pending={pending_path or transition_path}"
+                        )
+                        last_wait_log_at = now
+                    time.sleep(scan_interval)
+                    continue
+            else:
+                # fallback: BlankMapAdd同期なしの場合だけ従来の送信開始間隔で抑制する
+                interval = max(0, int(getattr(self._cfg, "sd_slideshow_interval_sec", 20) or 0))
+                if last_send_started_at > 0 and interval > 0:
+                    elapsed = time.monotonic() - last_send_started_at
+                    wait_left = interval - elapsed
+                    while wait_left > 0 and self._sd_forever_running and self._running:
+                        with self._sd_prompt_lock:
+                            if self._sd_iteration != iter_at_start:
+                                break
+                        time.sleep(min(0.2, wait_left))
+                        wait_left = interval - (time.monotonic() - last_send_started_at)
+
+            if not self._sd_forever_running or not self._running:
+                break
+
+            last_send_started_at = time.monotonic()
+            send_state = {"done": False, "ok": False}
+
+            def _send_and_mark() -> None:
+                send_state["ok"] = _do_send(prompt, iter_at_start)
+                send_state["done"] = True
+
+            send_thread = threading.Thread(target=_send_and_mark, daemon=True)
+            send_thread.start()
+
+            # 監視: 別プロンプトが来たら interrupt、ループ停止要求が来たら interrupt
+            interrupted = False
+            while send_thread.is_alive():
+                if not self._sd_forever_running or not self._running:
+                    try:
+                        post_a1111_interrupt(
+                            host=str(self._cfg.sd_prompt_target_host or ""),
+                            port=int(self._cfg.sd_prompt_target_port or 7860),
+                            token=str(self._cfg.sd_prompt_token or ""),
+                            timeout_sec=3.0,
+                        )
+                    except Exception:
+                        pass
+                    interrupted = True
+                    break
+                with self._sd_prompt_lock:
+                    current_iter = self._sd_iteration
+                if current_iter != iter_at_start:
+                    self.log.emit(f"[sd-forever] prompt changed -> interrupt iter={iter_at_start}")
+                    try:
+                        post_a1111_interrupt(
+                            host=str(self._cfg.sd_prompt_target_host or ""),
+                            port=int(self._cfg.sd_prompt_target_port or 7860),
+                            token=str(self._cfg.sd_prompt_token or ""),
+                            timeout_sec=3.0,
+                        )
+                    except Exception:
+                        pass
+                    interrupted = True
+                    break
+                time.sleep(0.2)
+            send_thread.join(timeout=max(1.0, float(self._cfg.sd_prompt_timeout_sec or 40.0)))
+            if sync_enabled and (not interrupted) and send_state.get("done") and send_state.get("ok"):
+                waiting_for_slideshow_consume = True
+                waiting_base_current_path = status_current_path
+                self.log.emit(
+                    f"[sd-forever] generated prefetch; wait slideshow current change from={waiting_base_current_path or '(empty)'}"
+                )
+            elif not send_state.get("done"):
+                time.sleep(2.0)
+
+    def _start_sd_control_server(self) -> None:
+        port = int(getattr(self._cfg, "sd_control_port", 18768) or 18768)
+        host = "127.0.0.1"
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _write_json(self, status: int, payload: dict) -> None:
+                raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:
+                if self.path == "/health":
+                    self._write_json(int(HTTPStatus.OK), {
+                        "ok": True,
+                        "sd_forever_running": owner._sd_forever_running,
+                        "iteration": owner._sd_iteration,
+                    })
+                    return
+                self._write_json(int(HTTPStatus.NOT_FOUND), {"ok": False, "error": "not found"})
+
+            def do_POST(self) -> None:
+                if self.path == "/sd/stop":
+                    owner._stop_sd_forever(interrupt_current=True)
+                    self._write_json(int(HTTPStatus.OK), {"ok": True, "stopped": True})
+                    return
+                self._write_json(int(HTTPStatus.NOT_FOUND), {"ok": False, "error": "not found"})
+
+            def log_message(self, fmt: str, *args) -> None:
+                owner.log.emit("[sd-control-http] " + (fmt % args))
+
+        try:
+            server = ThreadingHTTPServer((host, port), Handler)
+        except Exception as exc:
+            self.log.emit(f"[sd-control] 起動失敗: {exc}")
+            return
+        server.daemon_threads = True
+        server.timeout = 0.5
+        self._sd_control_server = server
+        self._sd_control_thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.5},
+            daemon=True,
+        )
+        self._sd_control_thread.start()
+        self.log.emit(f"[sd-control] listening http://{host}:{port}/sd/stop")
+
+    def _stop_sd_control_server(self) -> None:
+        if self._sd_control_server is not None:
+            try:
+                self._sd_control_server.shutdown()
+            except Exception:
+                pass
+            try:
+                self._sd_control_server.server_close()
+            except Exception:
+                pass
+            self._sd_control_server = None
+
         if self._external_server_thread is not None:
             self._external_server_thread.join(timeout=2.0)
             self._external_server_thread = None
@@ -438,6 +792,9 @@ class PipelineWorker(QObject):
             self.log.emit("[pipeline] 外部テキストサーバー起動中...")
             self._start_external_text_server()
             self.log.emit("[pipeline] 外部テキストサーバーOK")
+
+            self._start_sd_forever_loop()
+            self._start_sd_control_server()
 
             self.log.emit("[pipeline] ファイル監視起動中...")
             self._observer = self._create_observer()
@@ -1223,10 +1580,11 @@ class PipelineWorker(QObject):
         kana_conv = [{"from": r[4], "to": r[1]} for r in self._kana_rules if r[4] and r[1]]
         combined_conv = kana_conv + list(self._cfg.conversion_dict or [])
         response_limit = max(3000, max(1, int(self._cfg.max_response_chars))) if self._cfg.max_response_chars_enabled else 0
+        llm_text = text
 
         p_cmd = [
             str(self._cfg.pipeline_python), str(pipeline_script),
-            "--text", text,
+            "--text", llm_text,
             "--max-response-chars", str(response_limit),
             "--sbv2-root", str(self._cfg.sbv2_root),
             "--model-name", self._cfg.sbv2_model_name,
@@ -1261,6 +1619,60 @@ class PipelineWorker(QObject):
                            "--target-endpoint", self._cfg.target_endpoint])
             if self._cfg.target_token:
                 p_cmd.extend(["--target-token", self._cfg.target_token])
+        p_cmd.extend([
+            "--sd-prompt-begin-tag", str(self._cfg.sd_prompt_begin_tag or "[SD_PROMPT_BEGIN]"),
+            "--sd-prompt-end-tag", str(self._cfg.sd_prompt_end_tag or "[SD_PROMPT_END]"),
+        ])
+        if self._cfg.sd_prompt_send_enabled:
+            p_cmd.append("--sd-prompt-send-enabled")
+            p_cmd.extend([
+                "--sd-prompt-target-host", self._cfg.sd_prompt_target_host,
+                "--sd-prompt-target-port", str(self._cfg.sd_prompt_target_port),
+                "--sd-prompt-endpoint", self._cfg.sd_prompt_endpoint,
+                "--sd-prompt-timeout", str(self._cfg.sd_prompt_timeout_sec),
+                "--sd-prompt-model-checkpoint", self._cfg.sd_prompt_model_checkpoint,
+                "--sd-prompt-vae", self._cfg.sd_prompt_vae,
+                "--sd-prompt-clip-skip", str(self._cfg.sd_prompt_clip_skip),
+                "--sd-prompt-append-prompt", self._cfg.sd_prompt_append_prompt,
+                "--sd-prompt-negative-prompt", self._cfg.sd_prompt_negative_prompt,
+                "--sd-prompt-steps", str(self._cfg.sd_prompt_steps),
+                "--sd-prompt-width", str(self._cfg.sd_prompt_width),
+                "--sd-prompt-height", str(self._cfg.sd_prompt_height),
+                "--sd-prompt-cfg-scale", str(self._cfg.sd_prompt_cfg_scale),
+                "--sd-prompt-sampler-name", self._cfg.sd_prompt_sampler_name,
+                "--sd-prompt-scheduler", self._cfg.sd_prompt_scheduler,
+                "--sd-prompt-seed", str(self._cfg.sd_prompt_seed),
+                "--sd-prompt-subseed", str(self._cfg.sd_prompt_subseed),
+                "--sd-prompt-subseed-strength", str(self._cfg.sd_prompt_subseed_strength),
+                "--sd-prompt-batch-size", str(self._cfg.sd_prompt_batch_size),
+                "--sd-prompt-n-iter", str(self._cfg.sd_prompt_n_iter),
+                "--sd-prompt-hr-scale", str(self._cfg.sd_prompt_hr_scale),
+                "--sd-prompt-hr-upscaler", self._cfg.sd_prompt_hr_upscaler,
+                "--sd-prompt-hr-second-pass-steps", str(self._cfg.sd_prompt_hr_second_pass_steps),
+                "--sd-prompt-denoising-strength", str(self._cfg.sd_prompt_denoising_strength),
+                "--sd-prompt-hr-resize-x", str(self._cfg.sd_prompt_hr_resize_x),
+                "--sd-prompt-hr-resize-y", str(self._cfg.sd_prompt_hr_resize_y),
+                "--sd-prompt-hr-sampler-name", self._cfg.sd_prompt_hr_sampler_name,
+                "--sd-prompt-hr-scheduler", self._cfg.sd_prompt_hr_scheduler,
+                "--sd-prompt-hr-checkpoint-name", self._cfg.sd_prompt_hr_checkpoint_name,
+                "--sd-prompt-hr-prompt", self._cfg.sd_prompt_hr_prompt,
+                "--sd-prompt-hr-negative-prompt", self._cfg.sd_prompt_hr_negative_prompt,
+                "--sd-prompt-extra-payload-json", self._cfg.sd_prompt_extra_payload_json,
+            ])
+            if self._cfg.sd_prompt_token:
+                p_cmd.extend(["--sd-prompt-token", self._cfg.sd_prompt_token])
+            if self._cfg.sd_prompt_restore_faces:
+                p_cmd.append("--sd-prompt-restore-faces")
+            if self._cfg.sd_prompt_tiling:
+                p_cmd.append("--sd-prompt-tiling")
+            if self._cfg.sd_prompt_save_images:
+                p_cmd.append("--sd-prompt-save-images")
+            if self._cfg.sd_prompt_send_images:
+                p_cmd.append("--sd-prompt-send-images")
+            if self._cfg.sd_prompt_enable_hr:
+                p_cmd.append("--sd-prompt-enable-hr")
+            if getattr(self._cfg, "sd_prompt_generate_forever", False):
+                p_cmd.append("--sd-skip-send")
         if self._cfg.sbv2_model_file:
             p_cmd.extend(["--model-file", self._cfg.sbv2_model_file])
         if self._sbv2_use_http():
@@ -1371,6 +1783,28 @@ class PipelineWorker(QObject):
             self.log.emit(
                 f"[grok-limit] send_len={len(response_send)} display_len={len(response_display)} line_count={int(p_json.get('line_count', 0) or 0)}"
             )
+            sd_prompt = str(p_json.get("sd_prompt", "") or "").strip()
+            if sd_prompt:
+                self.log.emit(f"[sd-prompt] detected len={len(sd_prompt)}")
+                if getattr(self._cfg, "sd_prompt_generate_forever", False):
+                    self._set_current_sd_prompt(sd_prompt)
+                sd_result = p_json.get("sd_prompt_send_result", {})
+                if isinstance(sd_result, dict) and sd_result:
+                    self.log.emit(
+                        "[sd-prompt] send "
+                        f"ok={int(bool(sd_result.get('ok', False)))} "
+                        f"status={int(sd_result.get('status', 0) or 0)} "
+                        f"url={str(sd_result.get('url', '') or '')} "
+                        f"error={str(sd_result.get('error', '') or '')[:120]}"
+                    )
+                saved_sd_prompt = self._append_session_text(
+                    "sd_prompts",
+                    sd_prompt,
+                    label=f"source={wav_name}",
+                )
+                if saved_sd_prompt is not None:
+                    p_json["sd_prompt_file"] = str(saved_sd_prompt)
+                    self.log.emit(f"[save] sd_prompt: {saved_sd_prompt}")
 
             if self._cfg.save_sbv2_input_text:
                 sbv2_input_text = ""
