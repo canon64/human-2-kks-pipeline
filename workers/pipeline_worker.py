@@ -490,6 +490,7 @@ class PipelineWorker(QObject):
             "ok": bool(pick("ok", "Ok", default=(200 <= status_code < 300))),
             "url": url,
             "enabled": bool(pick("enabled", "Enabled", default=False)),
+            "play_mode": str(pick("play_mode", "PlayMode", default="") or ""),
             "folder": str(pick("folder", "Folder", default="") or ""),
             "current_path": str(pick("current_path", "CurrentPath", default="") or ""),
             "pending_path": str(pick("pending_path", "PendingPath", default="") or ""),
@@ -500,6 +501,25 @@ class PipelineWorker(QObject):
             "scan_interval_sec": float(pick("scan_interval_sec", "ScanIntervalSec", default=1.0) or 1.0),
             "next_slide_in_sec": float(pick("next_slide_in_sec", "NextSlideInSec", default=0.0) or 0.0),
         }
+
+    def _post_blankmap_slideshow_show_latest(self) -> bool:
+        """新プロンプトの絵を即表示させるため、ゲームへ『今すぐ最新へ飛べ』命令を送る。"""
+        host = str(getattr(self._cfg, "sd_blankmap_status_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = max(1, min(65535, int(getattr(self._cfg, "sd_blankmap_status_port", 55782) or 55782)))
+        if host.startswith("http://") or host.startswith("https://"):
+            url = host.rstrip("/") + "/slideshow/show-latest"
+        else:
+            url = f"http://{host}:{port}/slideshow/show-latest"
+        timeout = max(0.2, float(getattr(self._cfg, "sd_blankmap_status_timeout_sec", 1.0) or 1.0))
+        try:
+            req = urllib.request.Request(url, data=b"{}", method="POST")
+            req.add_header("Content-Type", "application/json; charset=utf-8")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                int(getattr(resp, "status", 200))
+            return True
+        except Exception as exc:
+            self.log.emit(f"[sd-forever] show-latest failed url={url} err={str(exc)[:120]}")
+            return False
 
     def _sd_forever_worker(self) -> None:
         from core.sd_prompt_bridge import send_a1111_txt2img, post_a1111_interrupt
@@ -578,6 +598,7 @@ class PipelineWorker(QObject):
 
             sync_enabled = bool(getattr(self._cfg, "sd_blankmap_sync_enabled", True))
             status_current_path = ""
+            status_play_mode = ""
             if sync_enabled:
                 status = self._fetch_blankmap_slideshow_status()
                 if not status.get("ok", False):
@@ -590,6 +611,7 @@ class PipelineWorker(QObject):
                 last_status_error = ""
 
                 status_current_path = str(status.get("current_path", "") or "")
+                status_play_mode = str(status.get("play_mode", "") or "")
                 pending_path = str(status.get("pending_path", "") or "")
                 transition_path = str(status.get("transition_path", "") or "")
                 scan_interval = max(0.5, min(5.0, float(status.get("scan_interval_sec", 1.0) or 1.0)))
@@ -691,6 +713,10 @@ class PipelineWorker(QObject):
                 time.sleep(0.2)
             send_thread.join(timeout=max(1.0, float(self._cfg.sd_prompt_timeout_sec or 40.0)))
             if sync_enabled and (not interrupted) and send_state.get("done") and send_state.get("ok"):
+                # 新しいプロンプトの絵はQueueモードでも待たせず即表示させる
+                if prompt_changed and status_play_mode == "Queue":
+                    if self._post_blankmap_slideshow_show_latest():
+                        self.log.emit("[sd-forever] new prompt -> show latest now")
                 waiting_for_slideshow_consume = True
                 waiting_base_current_path = status_current_path
                 self.log.emit(
