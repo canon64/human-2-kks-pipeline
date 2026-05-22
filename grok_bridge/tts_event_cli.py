@@ -970,6 +970,9 @@ def main() -> int:
                     "main": int(args.main),
                     "interrupt": 1,
                     "deleteAfterPlay": 0,
+                    "responseText": response_display,
+                    "lineTexts": [str(v) for v in display_lines],
+                    "lineDurations": [_round3(v) for v in line_durations],
                     "items": items,
                 }
                 if args.voice_volume >= 0:

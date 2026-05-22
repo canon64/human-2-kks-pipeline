@@ -2025,7 +2025,9 @@ class MainWindow(QMainWindow):
             else:
                 self._append_log("[sbv2-test] pipeline worker missing: subtitle skipped")
             delay = female_hold if female_hold else 0.0
-            if worker is not None:
+            if sequence_sent:
+                self._append_log("[sbv2-test] response_text skipped: triggers embedded in sequence")
+            elif worker is not None:
                 worker._schedule_response_text(response_display, cfg.main_index, delay, session_id=sequence_session_id)
             else:
                 self._append_log("[sbv2-test] pipeline worker missing: response_text skipped")

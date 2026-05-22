@@ -1892,8 +1892,10 @@ class PipelineWorker(QObject):
             matched_indices = self._find_video_indices_from_response(response_original)
             if matched_indices:
                 self.log.emit("[video] Human_2_kks からの動画切り替え送信は無効化中")
-            # 生テキストをC#へ送信 → C#側でcoord/clothes検出・遅延実行
-            if response_display:
+            # merged時だけ生テキストを後追い送信。sequence時はspeak_sequenceに同梱済み。
+            if response_display and sequence_sent:
+                self.log.emit("[response_text] sequence送信済みのため後追い送信をスキップ")
+            elif response_display:
                 delay = female_hold if female_hold else 0.0
                 line_texts_for_timing = p_json.get("display_line_texts", []) or p_json.get("line_texts", [])
                 line_durations_for_timing = p_json.get("line_durations", [])
