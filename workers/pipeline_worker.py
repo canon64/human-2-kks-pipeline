@@ -1474,7 +1474,7 @@ class PipelineWorker(QObject):
         self.log.emit(f"[video] トリガー検出失敗: '{payload}'")
         return []
 
-    def _schedule_response_text(self, text: str, main_index: int, delay_sec: float, session_id: str = "") -> None:
+    def _schedule_response_text(self, text: str, main_index: int, delay_sec: float, session_id: str = "", line_texts=None, line_durations=None) -> None:
         """Grokの生テキストをそのままKKSへ送る（C#側でキーワードマッチ）"""
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         pipe_name = self._cfg.pipe_name
@@ -1490,6 +1490,10 @@ class PipelineWorker(QObject):
             payload_obj = {"type": "response_text", "text": text, "main": main_index, "delaySeconds": delay_sec or 0.0}
             if session_id:
                 payload_obj["sessionId"] = session_id
+            # 行ごとタイミング用: 行テキストと行ごと実尺（件数一致時のみ）。C#側が行ごとに発火時刻を出す。
+            if line_texts and line_durations and len(line_texts) == len(line_durations):
+                payload_obj["lineTexts"] = [str(t) for t in line_texts]
+                payload_obj["lineDurations"] = [round(float(d), 3) for d in line_durations]
             payload = json.dumps(payload_obj, ensure_ascii=False)
             json_path = ""
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as temp_file:
@@ -1891,7 +1895,16 @@ class PipelineWorker(QObject):
             # 生テキストをC#へ送信 → C#側でcoord/clothes検出・遅延実行
             if response_display:
                 delay = female_hold if female_hold else 0.0
-                self._schedule_response_text(response_display, self._cfg.main_index, delay, session_id=sequence_session_id)
+                line_texts_for_timing = p_json.get("display_line_texts", []) or p_json.get("line_texts", [])
+                line_durations_for_timing = p_json.get("line_durations", [])
+                self._schedule_response_text(
+                    response_display,
+                    self._cfg.main_index,
+                    delay,
+                    session_id=sequence_session_id,
+                    line_texts=line_texts_for_timing,
+                    line_durations=line_durations_for_timing,
+                )
             # TTS出力フォルダを削除
             if run_dir is not None and run_dir.exists() and not sequence_sent:
                 shutil.rmtree(run_dir, ignore_errors=True)
