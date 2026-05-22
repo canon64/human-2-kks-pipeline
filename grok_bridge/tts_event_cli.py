@@ -139,6 +139,21 @@ def _safe_normalize_llm_backend(value: Any) -> str:
         return str(value or "").strip()
 
 
+def _translate_text(text: str, source: str, target: str, logger=None) -> str:
+    value = str(text or "")
+    if not value.strip() or not str(target or "").strip():
+        return value
+    try:
+        from deep_translator import GoogleTranslator
+
+        translated = GoogleTranslator(source=source or "auto", target=target).translate(value)
+        return translated if translated else value
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("subtitle_translate_failed source=%s target=%s error=%s", source, target, exc)
+        return value
+
+
 def _apply_conversion_rules(
     response: str,
     rules: list[dict[str, Any]],
@@ -641,6 +656,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="変換辞書JSON ([{\"from\":\"...\",\"to_sbv2\":\"...\",\"to_display\":\"...\",\"display_apply\":true}])。to_sbv2は単一文字列/改行区切り/|区切り/JSON配列を受け付け、送信時にランダム1件を使用。",
     )
+    parser.add_argument("--subtitle-translate-enabled", action="store_true", help="Translate display subtitles from SBV2 send text before event send.")
+    parser.add_argument("--subtitle-translate-source", default="auto", help="Subtitle translation source language.")
+    parser.add_argument("--subtitle-translate-target", default="", help="Subtitle translation target language.")
     return parser
 
 
@@ -803,14 +821,23 @@ def main() -> int:
 
         max_line_chars = max(0, int(args.max_line_chars or 0))
         lines = _split_response_lines(response, max_line_chars=max_line_chars)
-        display_lines = _split_response_lines(response_display, max_line_chars=max_line_chars)
-        if len(display_lines) != len(lines):
-            logger.warning(
-                "display_line_count_mismatch send_lines=%d display_lines=%d fallback=send_lines",
-                len(lines),
-                len(display_lines),
-            )
-            display_lines = list(lines)
+        response_display_translated = False
+        if args.subtitle_translate_enabled and str(args.subtitle_translate_target or "").strip():
+            display_lines = [
+                _translate_text(line, args.subtitle_translate_source, args.subtitle_translate_target, logger)
+                for line in lines
+            ]
+            response_display = "\n".join(display_lines)
+            response_display_translated = True
+        else:
+            display_lines = _split_response_lines(response_display, max_line_chars=max_line_chars)
+            if len(display_lines) != len(lines):
+                logger.warning(
+                    "display_line_count_mismatch send_lines=%d display_lines=%d fallback=send_lines",
+                    len(lines),
+                    len(display_lines),
+                )
+                display_lines = list(lines)
         logger.info(
             "grok_response_processed raw_len=%d capped_len=%d send_len=%d display_len=%d line_count=%d max_line_chars=%d",
             response_raw_len,
@@ -828,6 +855,7 @@ def main() -> int:
                     "response": "",
                     "response_original": "",
                     "response_display": "",
+                    "response_display_translated": False,
                     "response_raw_length": response_raw_len,
                     "response_capped_length": response_capped_len,
                     "response_truncated": response_truncated,
@@ -1222,6 +1250,7 @@ def main() -> int:
                 "response": response,
                 "response_original": response_original,
                 "response_display": response_display,
+                "response_display_translated": response_display_translated,
                 "response_raw_length": response_raw_len,
                 "response_capped_length": response_capped_len,
                 "response_truncated": response_truncated,
@@ -1271,6 +1300,7 @@ def main() -> int:
                 "error": str(exc),
                 "response": "",
                 "response_display": "",
+                "response_display_translated": False,
                 "response_raw_length": 0,
                 "response_capped_length": 0,
                 "response_truncated": False,

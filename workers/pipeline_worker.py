@@ -44,7 +44,7 @@ class PipelineWorker(QObject):
         self._paused = False
         self._observer = None
         self._wav_queue: queue.Queue[Path] = queue.Queue(maxsize=1024)
-        self._text_queue: queue.Queue[str] = queue.Queue(maxsize=256)
+        self._text_queue: queue.Queue[object] = queue.Queue(maxsize=256)
         self._seen: set[str] = set()
         self._lock = threading.Lock()
         self._transcribe_conv_lock = threading.Lock()
@@ -316,6 +316,18 @@ class PipelineWorker(QObject):
             f"[interrupt] queued new text source={src} dropped_text={dropped} terminated={int(terminated)} text={normalized[:80]}"
         )
         return True, ""
+
+    def send_prepared_text(self, text: str, display_text: str = "") -> None:
+        try:
+            self._text_queue.put_nowait(
+                {
+                    "text": str(text or ""),
+                    "display_text": str(display_text or ""),
+                    "preprocessed": True,
+                }
+            )
+        except queue.Full:
+            self.log.emit("[warn] テキストキューが満杯")
 
     def _source_mode(self) -> str:
         mode = (self._cfg.source_mode or DEFAULT_SOURCE_MODE).strip().lower()
@@ -912,12 +924,30 @@ class PipelineWorker(QObject):
             while self._running:
                 # 手動テキスト優先
                 try:
-                    text = self._text_queue.get_nowait()
-                    raw_text = str(text or "").strip()
+                    item = self._text_queue.get_nowait()
+                    if isinstance(item, dict) and item.get("preprocessed"):
+                        text_grok = str(item.get("text", "") or "").strip()
+                        text_display = str(item.get("display_text", "") or "").strip() or text_grok
+                        if not text_grok:
+                            continue
+                        self.log.emit(f"[manual-prepared] grok: '{text_grok[:80]}'")
+                        if text_display != text_grok:
+                            self.log.emit(f"[manual-prepared] display: '{text_display[:80]}'")
+                        self._process_text(text_grok, manual=True, display_text=text_display)
+                        continue
+
+                    raw_text = str(item or "").strip()
                     if not raw_text:
                         continue
                     text_grok = self._apply_transcribe_conversion(raw_text, mode="grok")
-                    text_display = self._apply_transcribe_conversion(raw_text, mode="display")
+                    if self._cfg.translate_enabled:
+                        translated = self._translate_text(text_grok, self._cfg.translate_source, self._cfg.translate_target)
+                        self.log.emit(f"[manual-translate] {text_grok[:60]} → {translated[:60]}")
+                        text_grok = translated
+                    if self._cfg.translate_enabled and self._cfg.translate_input_subtitle_original:
+                        text_display = self._apply_transcribe_conversion(raw_text, mode="display")
+                    else:
+                        text_display = self._apply_transcribe_conversion(text_grok, mode="display")
                     if text_grok != raw_text:
                         self.log.emit(f"[manual-conv] grok: '{raw_text}' -> '{text_grok}'")
                     if text_display != raw_text:
@@ -1347,7 +1377,14 @@ class PipelineWorker(QObject):
                 return
             raw_text = text
             text = self._apply_transcribe_conversion(raw_text, mode="grok")
-            display_text = self._apply_transcribe_conversion(raw_text, mode="display")
+            if self._cfg.translate_enabled:
+                translated = self._translate_text(text, self._cfg.translate_source, self._cfg.translate_target)
+                self.log.emit(f"[translate] {text[:60]} → {translated[:60]}")
+                text = translated
+            if self._cfg.translate_enabled and self._cfg.translate_input_subtitle_original:
+                display_text = self._apply_transcribe_conversion(raw_text, mode="display")
+            else:
+                display_text = self._apply_transcribe_conversion(text, mode="display")
             if not text:
                 self.log.emit(f"[info] 変換後に空テキスト: {wav.name}")
                 return
@@ -1467,6 +1504,17 @@ class PipelineWorker(QObject):
             return False, f"HTTP {exc.code}: {detail}"
         except Exception as exc:
             return False, str(exc)
+
+    def _translate_text(self, text: str, source: str = "auto", target: str = "ja") -> str:
+        if not text.strip():
+            return text
+        try:
+            from deep_translator import GoogleTranslator
+            result = GoogleTranslator(source=source, target=target).translate(text)
+            return result if result else text
+        except Exception as exc:
+            self.log.emit(f"[translate] 失敗: {exc}")
+            return text
 
     def _send_subtitle(self, text: str, wav_name: str, mode: str, hold_seconds: Optional[float] = None) -> None:
         if not self._cfg.subtitle_send_enabled:
@@ -1794,6 +1842,12 @@ class PipelineWorker(QObject):
                 p_cmd.extend(["--sbv2-server-url", sbv2_url])
         if combined_conv:
             p_cmd.extend(["--conversion-json", json.dumps(combined_conv, ensure_ascii=False)])
+        if self._cfg.translate_response_enabled:
+            p_cmd.append("--subtitle-translate-enabled")
+            p_cmd.extend([
+                "--subtitle-translate-source", "auto",
+                "--subtitle-translate-target", self._cfg.translate_response_target,
+            ])
         # event-senderは同梱スクリプトを明示指定
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         if sender_ps1.exists():
@@ -1962,9 +2016,17 @@ class PipelineWorker(QObject):
             if response_original and response_display == response_original:
                 self.log.emit("[tts-conv] display unchanged (display_apply off or no hit)")
             if p_json.get("ok"):
-                if response_display and not sequence_sent:
-                    self._send_subtitle(response_display, wav_name, "StackFemale", hold_seconds=female_hold)
-                elif response_display and sequence_sent:
+                subtitle_text = response_display
+                if (
+                    self._cfg.translate_response_enabled
+                    and response_display
+                    and not bool(p_json.get("response_display_translated", False))
+                ):
+                    subtitle_text = self._translate_text(response_display, "auto", self._cfg.translate_response_target)
+                    self.log.emit(f"[translate-resp] {response_display[:40]} → {subtitle_text[:40]}")
+                if subtitle_text and not sequence_sent:
+                    self._send_subtitle(subtitle_text, wav_name, "StackFemale", hold_seconds=female_hold)
+                elif subtitle_text and sequence_sent:
                     self.log.emit("[subtitle] line subtitles are handled by VoiceFaceEventBridge sequence playback")
                 self.log.emit(f"[done] {label}")
             else:

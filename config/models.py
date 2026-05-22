@@ -134,6 +134,12 @@ class AppConfig:
     sbv2_server_auto_start: bool = True
     diagnostic_log_enabled: bool = False
     diagnostic_log_interval_ms: int = 1000
+    translate_enabled: bool = False
+    translate_source: str = "auto"
+    translate_target: str = "ja"
+    translate_input_subtitle_original: bool = True
+    translate_response_enabled: bool = False
+    translate_response_target: str = "en"
     filter_phrases: list[dict] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)
     conversion_dict: list[dict] = field(default_factory=list)

@@ -59,6 +59,47 @@ def _as_bool(value: object, default: bool) -> bool:
     return default
 
 
+def _combo_value(widget: object, default: str) -> str:
+    current_data = getattr(widget, "currentData", None)
+    if callable(current_data):
+        data = current_data()
+        if data is not None:
+            value = str(data).strip()
+            if value:
+                return value
+    current_text = getattr(widget, "currentText", None)
+    if callable(current_text):
+        value = str(current_text()).strip()
+        if value:
+            return value
+    text = getattr(widget, "text", None)
+    if callable(text):
+        value = str(text()).strip()
+        if value:
+            return value
+    return default
+
+
+def _set_combo_value(widget: object, value: str) -> bool:
+    find_data = getattr(widget, "findData", None)
+    set_current_index = getattr(widget, "setCurrentIndex", None)
+    if callable(find_data) and callable(set_current_index):
+        idx = find_data(value)
+        if idx < 0:
+            add_item = getattr(widget, "addItem", None)
+            if callable(add_item):
+                add_item(value, value)
+                idx = find_data(value)
+        if idx >= 0:
+            set_current_index(idx)
+            return True
+    set_text = getattr(widget, "setText", None)
+    if callable(set_text):
+        set_text(value)
+        return True
+    return False
+
+
 def _normalize_face_send_mode(value: object, default: str = "game_preset") -> str:
     token = str(value or "").strip().lower()
     if token == "preset_id":
@@ -299,6 +340,12 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         transcribe_server_port=_read_transcribe_server_port(config_file),
         diagnostic_log_enabled=bool(window.diagnostic_log_enabled_chk.isChecked()),
         diagnostic_log_interval_ms=diagnostic_log_interval_ms,
+        translate_enabled=bool(window.translate_enabled_chk.isChecked()),
+        translate_source=_combo_value(window.translate_source_edit, "auto"),
+        translate_target=_combo_value(window.translate_target_edit, "ja"),
+        translate_input_subtitle_original=bool(window.translate_input_subtitle_original_chk.isChecked()),
+        translate_response_enabled=bool(window.translate_response_enabled_chk.isChecked()),
+        translate_response_target=_combo_value(window.translate_response_target_edit, "en"),
         sbv2_mode=_normalize_sbv2_mode(
             window.sbv2_mode_combo.currentData()
             if window.sbv2_mode_combo.currentData() is not None
@@ -453,6 +500,12 @@ def save_config(
         "transcribe_server_port": cfg.transcribe_server_port,
         "diagnostic_log_enabled": cfg.diagnostic_log_enabled,
         "diagnostic_log_interval_ms": cfg.diagnostic_log_interval_ms,
+        "translate_enabled": cfg.translate_enabled,
+        "translate_source": cfg.translate_source,
+        "translate_target": cfg.translate_target,
+        "translate_input_subtitle_original": cfg.translate_input_subtitle_original,
+        "translate_response_enabled": cfg.translate_response_enabled,
+        "translate_response_target": cfg.translate_response_target,
         "sbv2_mode": cfg.sbv2_mode,
         "sbv2_server_url": cfg.sbv2_server_url,
         "sbv2_server_auto_start": cfg.sbv2_server_auto_start,
@@ -632,6 +685,12 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.max_response_chars_spin.setValue(i("max_response_chars", window.max_response_chars_spin.value()))
         window.max_response_chars_spin.setEnabled(window.max_response_chars_enabled_chk.isChecked())
         window.diagnostic_log_enabled_chk.setChecked(b("diagnostic_log_enabled", False))
+        window.translate_enabled_chk.setChecked(b("translate_enabled", False))
+        _set_combo_value(window.translate_source_edit, s("translate_source", "auto"))
+        _set_combo_value(window.translate_target_edit, s("translate_target", "ja"))
+        window.translate_input_subtitle_original_chk.setChecked(b("translate_input_subtitle_original", True))
+        window.translate_response_enabled_chk.setChecked(b("translate_response_enabled", False))
+        _set_combo_value(window.translate_response_target_edit, s("translate_response_target", "en"))
         sbv2_mode = _normalize_sbv2_mode(data.get("sbv2_mode", "auto"), "auto")
         sbv2_mode_index = max(0, window.sbv2_mode_combo.findData(sbv2_mode))
         window.sbv2_mode_combo.setCurrentIndex(sbv2_mode_index)

@@ -86,6 +86,55 @@ from core.io_utils import (
 from core.sd_prompt_bridge import send_a1111_txt2img
 from workers.pipeline_worker import PipelineWorker
 from workers.recorder_worker import RecorderWorker
+
+FALLBACK_TRANSLATE_LANGUAGES = {
+    "japanese": "ja",
+    "english": "en",
+    "korean": "ko",
+    "chinese (simplified)": "zh-CN",
+    "chinese (traditional)": "zh-TW",
+    "french": "fr",
+    "german": "de",
+    "spanish": "es",
+    "russian": "ru",
+    "thai": "th",
+    "vietnamese": "vi",
+}
+
+
+def _supported_translate_languages() -> dict[str, str]:
+    try:
+        from deep_translator import GoogleTranslator
+
+        langs = GoogleTranslator().get_supported_languages(as_dict=True)
+        if isinstance(langs, dict) and langs:
+            return {str(name): str(code) for name, code in langs.items()}
+    except Exception:
+        pass
+    return FALLBACK_TRANSLATE_LANGUAGES.copy()
+
+
+def _make_language_combo(default_code: str, allow_auto: bool = False) -> QComboBox:
+    combo = _NoWheelComboBox()
+    combo.setMinimumWidth(170)
+    if allow_auto:
+        combo.addItem("auto", "auto")
+    for name, code in sorted(_supported_translate_languages().items(), key=lambda item: item[0].lower()):
+        combo.addItem(f"{name} ({code})", code)
+    _set_language_combo_value(combo, default_code)
+    return combo
+
+
+def _set_language_combo_value(combo: QComboBox, code: str) -> None:
+    value = (code or "").strip()
+    if not value:
+        value = "auto" if combo.findData("auto") >= 0 else "ja"
+    idx = combo.findData(value)
+    if idx < 0:
+        combo.addItem(value, value)
+        idx = combo.findData(value)
+    combo.setCurrentIndex(max(0, idx))
+
 from workers.thread_workers import SeleniumWorker as _SeleniumWorker, TaskWorker as _TaskWorker
 
 CONFIG_FILE = PROJECT_ROOT / "config.json"
@@ -503,6 +552,35 @@ class MainWindow(QMainWindow):
         whisper_row.addWidget(QLabel("beam")); whisper_row.addWidget(self.faster_beam_spin)
         w = QWidget(); w.setLayout(whisper_row)
         form.addRow("Whisper", w)
+
+        fw_translate_row = QHBoxLayout()
+        self.translate_enabled_chk = QCheckBox("FW文字起こしを翻訳")
+        self.translate_enabled_chk.setChecked(False)
+        self.translate_source_edit = _make_language_combo("auto", allow_auto=True)
+        self.translate_target_edit = _make_language_combo("ja")
+        fw_translate_row.addWidget(self.translate_enabled_chk)
+        fw_translate_row.addWidget(QLabel("元"))
+        fw_translate_row.addWidget(self.translate_source_edit)
+        fw_translate_row.addWidget(QLabel("→ Grok/SBV2用"))
+        fw_translate_row.addWidget(self.translate_target_edit)
+        fw_translate_row.addStretch(1)
+        fw_translate_w = QWidget(); fw_translate_w.setLayout(fw_translate_row)
+        form.addRow("FW翻訳(Grok送信用)", fw_translate_w)
+
+        subtitle_translate_row = QHBoxLayout()
+        self.translate_input_subtitle_original_chk = QCheckBox("入力字幕は元言語")
+        self.translate_input_subtitle_original_chk.setChecked(True)
+        self.translate_response_enabled_chk = QCheckBox("返答字幕を翻訳")
+        self.translate_response_enabled_chk.setChecked(False)
+        self.translate_response_target_edit = _make_language_combo("en")
+        subtitle_translate_row.addWidget(self.translate_input_subtitle_original_chk)
+        subtitle_translate_row.addSpacing(20)
+        subtitle_translate_row.addWidget(self.translate_response_enabled_chk)
+        subtitle_translate_row.addWidget(QLabel("返答字幕 →"))
+        subtitle_translate_row.addWidget(self.translate_response_target_edit)
+        subtitle_translate_row.addStretch(1)
+        subtitle_translate_w = QWidget(); subtitle_translate_w.setLayout(subtitle_translate_row)
+        form.addRow("ゲーム字幕", subtitle_translate_w)
 
         self.pipeline_python_edit = QLineEdit(_local_py)
         pp_btn = QPushButton("参照")
@@ -970,14 +1048,14 @@ class MainWindow(QMainWindow):
         self.fw_test_status_label = QLabel("待機")
         fw_layout.addWidget(self.fw_test_status_label)
         fw_result_row = QHBoxLayout()
-        fw_raw_panel, self.fw_test_original_edit = self._make_labeled_result_edit("原文", "文字起こしの生テキスト")
+        fw_raw_panel, self.fw_test_original_edit = self._make_labeled_result_edit("FW原文", "文字起こしの生テキスト")
         fw_send_panel, self.fw_test_send_edit = self._make_labeled_result_edit(
-            "送信用",
-            "変換後（Grok送信用）",
+            "Grok送信用",
+            "文字起こし変換後。FW翻訳ONなら翻訳後",
             action_text="送信",
             action_callback=self._send_fw_test_send_text,
         )
-        fw_disp_panel, self.fw_test_display_edit = self._make_labeled_result_edit("表示用", "変換後（表示用）")
+        fw_disp_panel, self.fw_test_display_edit = self._make_labeled_result_edit("入力字幕用", "ゲームへ出す入力字幕")
         fw_result_row.addWidget(fw_raw_panel, 1)
         fw_result_row.addWidget(fw_send_panel, 1)
         fw_result_row.addWidget(fw_disp_panel, 1)
@@ -1032,9 +1110,9 @@ class MainWindow(QMainWindow):
         self.sbv2_test_status_label = QLabel("待機")
         sbv2_layout.addWidget(self.sbv2_test_status_label)
         sbv2_result_row = QHBoxLayout()
-        sbv2_raw_panel, self.sbv2_test_original_edit = self._make_labeled_result_edit("原文", "SBV2入力の元テキスト")
-        sbv2_send_panel, self.sbv2_test_send_edit = self._make_labeled_result_edit("送信用", "変換後（SBV2へ渡す）")
-        sbv2_disp_panel, self.sbv2_test_display_edit = self._make_labeled_result_edit("表示用", "変換後（字幕/表示）")
+        sbv2_raw_panel, self.sbv2_test_original_edit = self._make_labeled_result_edit("返答原文", "Grok返答相当の元テキスト")
+        sbv2_send_panel, self.sbv2_test_send_edit = self._make_labeled_result_edit("SBV2送信用", "SBV2へ渡す日本語テキスト")
+        sbv2_disp_panel, self.sbv2_test_display_edit = self._make_labeled_result_edit("返答字幕用", "ゲームへ出す返答字幕")
         sbv2_result_row.addWidget(sbv2_raw_panel, 1)
         sbv2_result_row.addWidget(sbv2_send_panel, 1)
         sbv2_result_row.addWidget(sbv2_disp_panel, 1)
@@ -1343,6 +1421,41 @@ class MainWindow(QMainWindow):
         return converted
 
     @staticmethod
+    def _translate_text_value(text: str, source: str = "auto", target: str = "ja") -> tuple[str, str]:
+        value = str(text or "")
+        if not value.strip():
+            return value, ""
+        try:
+            from deep_translator import GoogleTranslator
+
+            translated = GoogleTranslator(source=source, target=target).translate(value)
+            return (translated if translated else value), ""
+        except Exception as exc:
+            return value, str(exc)
+
+    def _build_fw_test_texts(self, raw_text: str, cfg: AppConfig) -> tuple[str, str, str]:
+        send_text = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send").strip()
+        translate_error = ""
+        if cfg.translate_enabled:
+            send_text, translate_error = self._translate_text_value(
+                send_text,
+                cfg.translate_source,
+                cfg.translate_target,
+            )
+            send_text = send_text.strip()
+
+        if cfg.translate_enabled and cfg.translate_input_subtitle_original:
+            display_source = raw_text
+        else:
+            display_source = send_text
+        display_text = self._apply_text_conversion_rules(
+            display_source,
+            cfg.transcribe_conversion_dict,
+            mode="display",
+        ).strip()
+        return send_text, display_text, translate_error
+
+    @staticmethod
     def _make_labeled_result_edit(
         title: str,
         placeholder: str,
@@ -1373,12 +1486,36 @@ class MainWindow(QMainWindow):
         return panel, edit
 
     def _send_fw_test_send_text(self) -> None:
-        text = self.fw_test_send_edit.toPlainText().strip()
-        if not text or text == "(空テキスト)":
+        raw_text = self.fw_test_original_edit.toPlainText().strip()
+        if not raw_text or raw_text == "(空テキスト)":
+            raw_text = self.fw_test_send_edit.toPlainText().strip()
+        if not raw_text or raw_text == "(空テキスト)":
             self.fw_test_status_label.setText("送信用テキストが空です")
             return
-        if self._send_text_to_pipeline(text, "fw-test送信"):
-            self.fw_test_status_label.setText("送信完了（送信用）")
+        if not self._pipeline_worker:
+            self._append_log("[warn] パイプラインが起動していません")
+            return
+        try:
+            cfg = self._active_runtime_cfg if self._active_runtime_cfg is not None else self._build_config()
+        except Exception as exc:
+            self.fw_test_status_label.setText("設定エラー")
+            self._append_log(f"[fw-test] send config error: {exc}")
+            return
+
+        text_send, text_display, translate_error = self._build_fw_test_texts(raw_text, cfg)
+        if not text_send:
+            self.fw_test_status_label.setText("Grok送信用テキストが空です")
+            return
+        self.fw_test_send_edit.setPlainText(text_send or "(空テキスト)")
+        self.fw_test_display_edit.setPlainText(text_display or "(空テキスト)")
+        if translate_error:
+            self._append_log(f"[fw-test] translate failed: {translate_error}")
+        self._pipeline_worker.send_prepared_text(text_send, text_display)
+        self._append_log(f"[fw-test送信] grok={text_send[:80]}")
+        if text_display:
+            self._append_log(f"[fw-test送信] input-subtitle={text_display[:80]}")
+        self._push_manual_history(text_send)
+        self.fw_test_status_label.setText("送信完了（Grok送信用）")
 
     def _enter_fw_test_guard(self) -> None:
         if self._fw_test_guard_active:
@@ -1542,12 +1679,13 @@ class MainWindow(QMainWindow):
             self._append_log(f"[fw-test] text config error: {exc}")
             return
 
-        text_send = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send").strip()
-        text_display = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="display").strip()
+        text_send, text_display, translate_error = self._build_fw_test_texts(raw_text, cfg)
         self.fw_test_original_edit.setPlainText(raw_text or "(空テキスト)")
         self.fw_test_send_edit.setPlainText(text_send or "(空テキスト)")
         self.fw_test_display_edit.setPlainText(text_display or "(空テキスト)")
         self.fw_test_status_label.setText("完了（手入力）")
+        if translate_error:
+            self._append_log(f"[fw-test] translate failed: {translate_error}")
         self._append_log(f"[fw-test] text original: {raw_text[:80]}")
         self._append_log(f"[fw-test] text send: {text_send[:80]}")
         self._append_log(f"[fw-test] text display: {text_display[:80]}")
@@ -1577,9 +1715,11 @@ class MainWindow(QMainWindow):
         )
         payload = _last_json_line(proc.stdout or "")
         raw_text = str(payload.get("text", "")).strip()
+        text_send, text_display, translate_error = self._build_fw_test_texts(raw_text, cfg)
         payload["text_original"] = raw_text
-        payload["text_send"] = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send")
-        payload["text_display"] = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="display")
+        payload["text_send"] = text_send
+        payload["text_display"] = text_display
+        payload["translate_error"] = translate_error
         payload["audio_path"] = str(wav_path)
         payload["returncode"] = proc.returncode
         if proc.returncode != 0 and payload.get("ok", False):
@@ -1598,6 +1738,9 @@ class MainWindow(QMainWindow):
             self.fw_test_send_edit.setPlainText(text_send or "(空テキスト)")
             self.fw_test_display_edit.setPlainText(text_display or "(空テキスト)")
             self.fw_test_status_label.setText("完了")
+            translate_error = str(data.get("translate_error", "") or "").strip()
+            if translate_error:
+                self._append_log(f"[fw-test] translate failed: {translate_error}")
             self._append_log(f"[fw-test] original: {text_original[:80]}")
             self._append_log(f"[fw-test] send: {text_send[:80]}")
             self._append_log(f"[fw-test] display: {text_display[:80]}")
@@ -1821,6 +1964,12 @@ class MainWindow(QMainWindow):
             cmd.extend(["--sbv2-server-url", cfg.sbv2_server_url])
         if cfg.conversion_dict:
             cmd.extend(["--conversion-json", json.dumps(list(cfg.conversion_dict), ensure_ascii=False)])
+        if cfg.translate_response_enabled:
+            cmd.append("--subtitle-translate-enabled")
+            cmd.extend([
+                "--subtitle-translate-source", "auto",
+                "--subtitle-translate-target", cfg.translate_response_target,
+            ])
         if no_send_event:
             cmd.append("--no-send-event")
         proc = subprocess.run(
@@ -3161,6 +3310,12 @@ class MainWindow(QMainWindow):
         self.max_response_chars_enabled_chk.toggled.connect(self._on_any_setting_changed)
         self.max_response_chars_spin.valueChanged.connect(self._on_any_setting_changed)
         self.diagnostic_log_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.translate_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.translate_source_edit.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.translate_target_edit.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.translate_input_subtitle_original_chk.toggled.connect(self._on_any_setting_changed)
+        self.translate_response_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.translate_response_target_edit.currentIndexChanged.connect(self._on_any_setting_changed)
         self.faster_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_model_edit.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_device_combo.currentTextChanged.connect(self._on_any_setting_changed)

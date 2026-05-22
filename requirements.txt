@@ -7,3 +7,4 @@ onnxruntime>=1.14,<2
 watchdog>=4.0.0
 selenium>=4.15
 undetected-chromedriver>=3.5
+deep-translator>=1.11
