@@ -399,6 +399,75 @@ def _run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.C
     )
 
 
+def _send_sequence_line_event(
+    *,
+    event_command_base: list[str],
+    run_dir: Path,
+    session_id: str,
+    line_index: int,
+    wav_path: Path,
+    display_text: str,
+    duration: float,
+    args: argparse.Namespace,
+    event_face_send_mode: str,
+    event_face_preset_name: str,
+    event_face_preset_id: str,
+    event_face_preset_random: bool,
+    event_face: int,
+    event_keep_current_face: bool,
+    include_face: bool,
+) -> tuple[str, str, str]:
+    line_no = max(1, int(line_index))
+    payload: dict[str, Any] = {
+        "type": "speak_sequence" if line_no == 1 else "speak_sequence_append",
+        "sessionId": session_id,
+        "main": int(args.main),
+        "interrupt": 1 if line_no == 1 else 0,
+        "deleteAfterPlay": 0,
+        "responseText": display_text,
+        "lineTexts": [display_text],
+        "lineDurations": [_round3(duration)],
+        "lineIndexOffset": line_no - 1,
+        "items": [
+            {
+                "index": line_no,
+                "audioPath": str(wav_path),
+                "subtitle": display_text,
+                "durationSeconds": _round3(duration),
+                "holdSeconds": _round3(max(0.1, duration + 0.2)),
+            }
+        ],
+    }
+    if args.voice_volume >= 0:
+        payload["volume"] = float(args.voice_volume)
+    if args.voice_pitch >= 0:
+        payload["pitch"] = float(args.voice_pitch)
+
+    if include_face:
+        if event_face_send_mode == "preset_name":
+            if event_face_preset_name:
+                payload["facePresetName"] = event_face_preset_name
+            if event_face_preset_id:
+                payload["facePresetId"] = event_face_preset_id
+            if event_face_preset_random:
+                payload["facePresetRandom"] = 1
+            if (not event_face_preset_random) and (not event_face_preset_name) and (not event_face_preset_id):
+                raise RuntimeError("face_send_mode=preset_name but face_preset_name is empty")
+        else:
+            if event_face >= 0:
+                payload["face"] = event_face
+            if event_keep_current_face:
+                payload["keepCurrentFace"] = 1
+
+    event_path = run_dir / f"voice_sequence_event_{line_no:03d}.json"
+    event_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    result = _run_subprocess(event_command_base + ["-JsonFile", str(event_path)])
+    return str(event_path), result.stdout, result.stderr
+
+
 def _tts_via_http_server(
     server_url: str,
     text: str,
@@ -563,8 +632,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--event-send-mode",
         default="sequence",
-        choices=["sequence", "merged"],
-        help="sequence sends line wavs one by one; merged keeps legacy merged.wav behavior.",
+        choices=["sequence", "stream", "merged"],
+        help="sequence sends all line wavs in one command; stream sends each line command as soon as its wav is ready; merged keeps legacy merged.wav behavior.",
     )
     parser.add_argument("--no-send-event", action="store_true", help="Do not send KKS event after wav merge.")
     parser.add_argument(
@@ -814,6 +883,60 @@ def main() -> int:
         if not args.model_name.strip():
             raise RuntimeError("--model-name is required unless --list-models is used.")
 
+        sequence_session_id = run_dir.name
+        sequence_event_file = ""
+        sequence_sent = False
+        event_stdout = ""
+        event_stderr = ""
+        event_sent = False
+        event_face_send_mode = _normalize_face_send_mode(args.face_send_mode)
+        event_face_preset_id = str(args.face_preset_id or "").strip()
+        event_face_preset_name = str(args.face_preset_name or "").strip()
+        event_face_preset_random = bool(args.face_preset_random)
+        event_face = int(args.face)
+        event_keep_current_face = bool(args.keep_current_face)
+        event_face_selected_name = event_face_preset_name
+        event_face_selected_id = event_face_preset_id
+        event_command_base: list[str] | None = None
+        stream_event_files: list[str] = []
+        stream_event_sent = False
+        if not args.no_send_event:
+            sender_path = Path(args.event_sender).resolve()
+            if not sender_path.exists():
+                raise FileNotFoundError(f"Event sender script not found: {sender_path}")
+
+            event_command_base = [
+                "powershell",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(sender_path),
+                "-PipeName",
+                args.pipe_name,
+            ]
+            logger.info(
+                "event_send_start mode=%s audio_mode=%s preset_name=%s preset_id=%s random=%d face=%d keep_current_face=%d remote_http=%d host=%s port=%d endpoint=%s",
+                event_face_send_mode,
+                args.event_send_mode,
+                event_face_preset_name or "(empty)",
+                event_face_preset_id or "(empty)",
+                int(event_face_preset_random),
+                event_face,
+                int(event_keep_current_face),
+                int(bool(args.remote_http)),
+                str(args.target_host or "").strip() or "(pipe-local)",
+                int(args.target_port),
+                args.target_endpoint,
+            )
+            if args.remote_http or args.target_host.strip():
+                event_command_base.append("-RemoteHttp")
+            if args.target_host.strip():
+                event_command_base.extend(["-TargetHost", args.target_host.strip()])
+                event_command_base.extend(["-TargetPort", str(args.target_port)])
+                event_command_base.extend(["-TargetEndpoint", args.target_endpoint])
+                if args.target_token.strip():
+                    event_command_base.extend(["-TargetToken", args.target_token.strip()])
+
         sbv2_server_url = (args.sbv2_server_url or "").strip()
 
         if sbv2_server_url:
@@ -843,6 +966,40 @@ def main() -> int:
                     output_path=out_path,
                 )
                 logger.info("tts_line_done line=%d/%d file=%s", i + 1, len(lines), out_path.name)
+                if args.event_send_mode == "stream" and not args.no_send_event and event_command_base is not None:
+                    duration = _wav_duration_sec(out_path)
+                    subtitle = display_lines[i] if i < len(display_lines) else line_text
+                    event_path, line_stdout, line_stderr = _send_sequence_line_event(
+                        event_command_base=event_command_base,
+                        run_dir=run_dir,
+                        session_id=sequence_session_id,
+                        line_index=i + 1,
+                        wav_path=out_path,
+                        display_text=subtitle,
+                        duration=duration,
+                        args=args,
+                        event_face_send_mode=event_face_send_mode,
+                        event_face_preset_name=event_face_preset_name,
+                        event_face_preset_id=event_face_preset_id,
+                        event_face_preset_random=event_face_preset_random,
+                        event_face=event_face,
+                        event_keep_current_face=event_keep_current_face,
+                        include_face=(i == 0),
+                    )
+                    stream_event_files.append(event_path)
+                    event_stdout = (event_stdout + "\n" + line_stdout).strip() if event_stdout else line_stdout
+                    event_stderr = (event_stderr + "\n" + line_stderr).strip() if event_stderr else line_stderr
+                    event_sent = True
+                    sequence_sent = True
+                    stream_event_sent = True
+                    logger.info(
+                        "event_stream_line_sent line=%d/%d file=%s stdout_len=%d stderr_len=%d",
+                        i + 1,
+                        len(lines),
+                        Path(event_path).name,
+                        len(line_stdout or ""),
+                        len(line_stderr or ""),
+                    )
             model_file_name = requested_model_file or "(server-auto)"
         else:
             # ── サブプロセス経由（従来方式） ──────────────────────────────────
@@ -899,57 +1056,7 @@ def main() -> int:
             merged_wav_path = run_dir / "merged.wav"
             _concat_wavs(part_paths, merged_wav_path, args.line_gap_ms)
 
-        sequence_session_id = run_dir.name
-        sequence_event_file = ""
-        sequence_sent = False
-        event_stdout = ""
-        event_stderr = ""
-        event_sent = False
-        event_face_send_mode = _normalize_face_send_mode(args.face_send_mode)
-        event_face_preset_id = str(args.face_preset_id or "").strip()
-        event_face_preset_name = str(args.face_preset_name or "").strip()
-        event_face_preset_random = bool(args.face_preset_random)
-        event_face = int(args.face)
-        event_keep_current_face = bool(args.keep_current_face)
-        event_face_selected_name = event_face_preset_name
-        event_face_selected_id = event_face_preset_id
-        if not args.no_send_event:
-            sender_path = Path(args.event_sender).resolve()
-            if not sender_path.exists():
-                raise FileNotFoundError(f"Event sender script not found: {sender_path}")
-
-            event_command_base = [
-                "powershell",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(sender_path),
-                "-PipeName",
-                args.pipe_name,
-            ]
-            logger.info(
-                "event_send_start mode=%s audio_mode=%s preset_name=%s preset_id=%s random=%d face=%d keep_current_face=%d remote_http=%d host=%s port=%d endpoint=%s",
-                event_face_send_mode,
-                args.event_send_mode,
-                event_face_preset_name or "(empty)",
-                event_face_preset_id or "(empty)",
-                int(event_face_preset_random),
-                event_face,
-                int(event_keep_current_face),
-                int(bool(args.remote_http)),
-                str(args.target_host or "").strip() or "(pipe-local)",
-                int(args.target_port),
-                args.target_endpoint,
-            )
-            if args.remote_http or args.target_host.strip():
-                event_command_base.append("-RemoteHttp")
-            if args.target_host.strip():
-                event_command_base.extend(["-TargetHost", args.target_host.strip()])
-                event_command_base.extend(["-TargetPort", str(args.target_port)])
-                event_command_base.extend(["-TargetEndpoint", args.target_endpoint])
-                if args.target_token.strip():
-                    event_command_base.extend(["-TargetToken", args.target_token.strip()])
-
+        if not args.no_send_event and event_command_base is not None and not stream_event_sent:
             if args.event_send_mode == "sequence":
                 items: list[dict[str, Any]] = []
                 for idx, wav_path in enumerate(part_paths):
@@ -1003,6 +1110,43 @@ def main() -> int:
                 )
                 sequence_event_file = str(sequence_event_path)
                 event_command = event_command_base + ["-JsonFile", str(sequence_event_path)]
+            elif args.event_send_mode == "stream":
+                event_command = []
+                for idx, wav_path in enumerate(part_paths):
+                    duration = line_durations[idx] if idx < len(line_durations) else 0.0
+                    subtitle = display_lines[idx] if idx < len(display_lines) else lines[idx]
+                    event_path, line_stdout, line_stderr = _send_sequence_line_event(
+                        event_command_base=event_command_base,
+                        run_dir=run_dir,
+                        session_id=sequence_session_id,
+                        line_index=idx + 1,
+                        wav_path=wav_path,
+                        display_text=subtitle,
+                        duration=duration,
+                        args=args,
+                        event_face_send_mode=event_face_send_mode,
+                        event_face_preset_name=event_face_preset_name,
+                        event_face_preset_id=event_face_preset_id,
+                        event_face_preset_random=event_face_preset_random,
+                        event_face=event_face,
+                        event_keep_current_face=event_keep_current_face,
+                        include_face=(idx == 0),
+                    )
+                    stream_event_files.append(event_path)
+                    event_stdout = (event_stdout + "\n" + line_stdout).strip() if event_stdout else line_stdout
+                    event_stderr = (event_stderr + "\n" + line_stderr).strip() if event_stderr else line_stderr
+                    logger.info(
+                        "event_stream_line_sent line=%d/%d file=%s stdout_len=%d stderr_len=%d",
+                        idx + 1,
+                        len(part_paths),
+                        Path(event_path).name,
+                        len(line_stdout or ""),
+                        len(line_stderr or ""),
+                    )
+                sequence_event_file = stream_event_files[0] if stream_event_files else ""
+                event_sent = True
+                sequence_sent = True
+                stream_event_sent = True
             else:
                 if merged_wav_path is None:
                     merged_wav_path = run_dir / "merged.wav"
@@ -1034,12 +1178,7 @@ def main() -> int:
                 if args.voice_pitch >= 0:
                     event_command.extend(["-Pitch", str(args.voice_pitch)])
 
-            try:
-                event_result = _run_subprocess(event_command)
-                event_stdout = event_result.stdout
-                event_stderr = event_result.stderr
-                event_sent = True
-                sequence_sent = args.event_send_mode == "sequence"
+            if args.event_send_mode == "stream":
                 logger.info(
                     "event_send_result status=ok mode=%s audio_mode=%s stdout_len=%d stderr_len=%d",
                     event_face_send_mode,
@@ -1047,17 +1186,34 @@ def main() -> int:
                     len(event_stdout or ""),
                     len(event_stderr or ""),
                 )
-            except subprocess.CalledProcessError as exc:
-                event_stdout = str(exc.stdout or "")
-                event_stderr = str(exc.stderr or "")
-                logger.error(
-                    "event_send_result status=ng mode=%s returncode=%s stdout=%r stderr=%r",
-                    event_face_send_mode,
-                    str(exc.returncode),
-                    event_stdout[:240],
-                    event_stderr[:240],
-                )
-                raise RuntimeError(f"event sender failed returncode={exc.returncode}") from exc
+            else:
+                try:
+                    event_result = _run_subprocess(event_command)
+                    event_stdout = event_result.stdout
+                    event_stderr = event_result.stderr
+                    event_sent = True
+                    sequence_sent = args.event_send_mode == "sequence"
+                    logger.info(
+                        "event_send_result status=ok mode=%s audio_mode=%s stdout_len=%d stderr_len=%d",
+                        event_face_send_mode,
+                        args.event_send_mode,
+                        len(event_stdout or ""),
+                        len(event_stderr or ""),
+                    )
+                except subprocess.CalledProcessError as exc:
+                    event_stdout = str(exc.stdout or "")
+                    event_stderr = str(exc.stderr or "")
+                    logger.error(
+                        "event_send_result status=ng mode=%s returncode=%s stdout=%r stderr=%r",
+                        event_face_send_mode,
+                        str(exc.returncode),
+                        event_stdout[:240],
+                        event_stderr[:240],
+                    )
+                    raise RuntimeError(f"event sender failed returncode={exc.returncode}") from exc
+
+        if args.event_send_mode == "stream" and stream_event_files and not sequence_event_file:
+            sequence_event_file = stream_event_files[0]
 
         _print_json(
             {

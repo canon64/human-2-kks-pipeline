@@ -230,10 +230,92 @@ class PipelineWorker(QObject):
             pass
 
     def send_text(self, text: str) -> None:
+        self._enqueue_interrupting_text(text, source="manual")
+
+    def _drain_text_queue(self) -> int:
+        drained = 0
+        while True:
+            try:
+                self._text_queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        return drained
+
+    def _terminate_current_pipeline(self, reason: str) -> bool:
+        with self._proc_lock:
+            proc = self._current_proc
+        if proc is None or proc.poll() is not None:
+            return False
+
         try:
-            self._text_queue.put_nowait(text)
+            proc.terminate()
+            self.log.emit(f"[interrupt] current pipeline terminated reason={reason}")
+            return True
+        except Exception as exc:
+            self.log.emit(f"[interrupt] terminate failed reason={reason}: {exc}")
+            return False
+
+    def _send_voiceface_stop(self, reason: str) -> None:
+        sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
+        if not sender_ps1.exists():
+            self.log.emit(f"[interrupt] stop skipped sender_missing={sender_ps1}")
+            return
+
+        cmd = [
+            "powershell", "-ExecutionPolicy", "Bypass", "-File", str(sender_ps1),
+            "-PipeName", self._cfg.pipe_name,
+            "-Stop",
+            "-ConnectTimeoutMs", "1500",
+        ]
+        target_host = self._cfg.target_host.strip()
+        if self._cfg.remote_http or target_host:
+            cmd.append("-RemoteHttp")
+        if target_host:
+            cmd.extend([
+                "-TargetHost", target_host,
+                "-TargetPort", str(self._cfg.target_port),
+                "-TargetEndpoint", self._cfg.target_endpoint,
+            ])
+            if self._cfg.target_token:
+                cmd.extend(["-TargetToken", self._cfg.target_token])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=4,
+                env=_with_utf8_env(),
+            )
+            if result.returncode != 0:
+                self.log.emit(f"[interrupt] stop send failed reason={reason}: {(result.stderr or result.stdout or '').strip()[:240]}")
+            else:
+                self.log.emit(f"[interrupt] stop sent reason={reason}")
+        except Exception as exc:
+            self.log.emit(f"[interrupt] stop send exception reason={reason}: {exc}")
+
+    def _enqueue_interrupting_text(self, text: str, source: str) -> tuple[bool, str]:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False, "text is empty"
+
+        src = (source or "external").strip() or "external"
+        dropped = self._drain_text_queue()
+        terminated = self._terminate_current_pipeline(f"new_text:{src}")
+        self._send_voiceface_stop(f"new_text:{src}")
+
+        try:
+            self._text_queue.put_nowait(normalized)
         except queue.Full:
-            self.log.emit("[warn] テキストキューが満杯")
+            return False, "text queue is full"
+
+        self.log.emit(
+            f"[interrupt] queued new text source={src} dropped_text={dropped} terminated={int(terminated)} text={normalized[:80]}"
+        )
+        return True, ""
 
     def _source_mode(self) -> str:
         mode = (self._cfg.source_mode or DEFAULT_SOURCE_MODE).strip().lower()
@@ -303,13 +385,13 @@ class PipelineWorker(QObject):
         if not self._register_external_event_id(event_id):
             return False, "duplicate event_id", int(HTTPStatus.CONFLICT)
 
-        try:
-            self._text_queue.put_nowait(normalized)
-        except queue.Full:
-            return False, "text queue is full", int(HTTPStatus.SERVICE_UNAVAILABLE)
-
         src = (source or "external").strip() or "external"
-        self.log.emit(f"[external] queued source={src} text={normalized[:80]}")
+        ok, reason = self._enqueue_interrupting_text(normalized, source=src)
+        if not ok:
+            status = int(HTTPStatus.SERVICE_UNAVAILABLE) if "full" in reason else int(HTTPStatus.BAD_REQUEST)
+            return False, reason, status
+
+        self.log.emit(f"[external] accepted source={src} text={normalized[:80]}")
         return True, "", int(HTTPStatus.OK)
 
     def _start_external_text_server(self) -> None:
@@ -1624,6 +1706,7 @@ class PipelineWorker(QObject):
             "--output-dir", str(self._cfg.output_dir / "grok_tts_outputs"),
             "--pipe-name", self._cfg.pipe_name,
             "--main", str(self._cfg.main_index),
+            "--event-send-mode", "stream",
         ]
         p_cmd.extend([
             "--llm-backend", str(self._cfg.llm_backend or "grok_browser"),

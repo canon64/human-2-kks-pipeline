@@ -1713,6 +1713,7 @@ class MainWindow(QMainWindow):
             "--output-dir", str(cfg.output_dir / "grok_tts_outputs"),
             "--pipe-name", cfg.pipe_name,
             "--main", str(cfg.main_index),
+            "--event-send-mode", "stream",
         ]
         sender_ps1 = PROJECT_ROOT / "send_voice_face_event.ps1"
         if sender_ps1.exists():
