@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.bak_*
+*.bak
 outputs/
 data/
 python/
