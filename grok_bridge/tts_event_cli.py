@@ -792,6 +792,7 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
     state: dict[str, Any] = {
         "idx": 0,
         "lines": [],
+        "voice": [],
         "display": [],
         "durations": [],
         "wavs": [],
@@ -863,6 +864,7 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
         )
         duration = _wav_duration_sec(out_path)
         state["lines"].append(send_conv)
+        state["voice"].append(speak_text)
         state["display"].append(disp_conv)
         state["durations"].append(duration)
         state["wavs"].append(str(out_path))
@@ -918,6 +920,7 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
         {
             "ok": True, "error": "",
             "response": response_text,
+            "voice_text": "\n".join(state["voice"]),
             "response_original": full,
             "response_display": response_display,
             "response_display_translated": bool(
@@ -1581,6 +1584,7 @@ def main() -> int:
                 "ok": True,
                 "error": "",
                 "response": response,
+                "voice_text": "\n".join(speak_lines),
                 "response_original": response_original,
                 "response_display": response_display,
                 "response_display_translated": response_display_translated,

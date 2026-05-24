@@ -2113,7 +2113,7 @@ class MainWindow(QMainWindow):
         if event_stderr:
             self._append_log(f"[sbv2-test][event-face][stderr] {event_stderr[:240]}")
         response_original = str(data.get("response_original", "")).strip()
-        response_send = str(data.get("response", response_original)).strip()
+        response_send = str(data.get("voice_text", "") or data.get("response", response_original)).strip()
         response_display = str(data.get("response_display", response_original)).strip()
         self.sbv2_test_original_edit.setPlainText(response_original or "(空テキスト)")
         self.sbv2_test_send_edit.setPlainText(response_send or "(空テキスト)")
