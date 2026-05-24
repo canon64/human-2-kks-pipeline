@@ -469,3 +469,96 @@ def wait_for_response(
     """Grok応答を待機する。"""
     logger.info("wait_for_response timeout=%.0fs", config.response_timeout_seconds)
     return _wait_stop_button_mode(driver, config, logger, baseline_text)
+
+
+def stream_sentences(
+    driver,
+    config: BridgeConfig,
+    logger: logging.Logger,
+    baseline_text: str,
+    on_sentence,
+    on_sd_prompt=None,
+    sd_begin_tag: str = "[SD_PROMPT_BEGIN]",
+    sd_end_tag: str = "[SD_PROMPT_END]",
+    unclosed_policy: str = "auto",
+    should_cancel=None,
+) -> str:
+    """Grok応答を生成中にポーリングし、GrokStreamParser へ流す（即時処理）。
+    文が完成するたび on_sentence(文)、SDブロックが閉じるたび on_sd_prompt(prompt) を呼ぶ。
+    生成完了後に末尾をフラッシュし、応答全文を返す。
+    should_cancel() が True を返したら、フラッシュせず即 return（＝破棄して停止）。"""
+    from .stream_parser import GrokStreamParser
+
+    t0 = time.time()
+    deadline = t0 + config.response_timeout_seconds
+    selectors = config.selectors.response_blocks
+
+    def _cancelled() -> bool:
+        return bool(should_cancel and should_cancel())
+
+    parser = GrokStreamParser(
+        on_sentence=on_sentence,
+        on_sd_prompt=on_sd_prompt,
+        begin_tag=sd_begin_tag,
+        end_tag=sd_end_tag,
+        unclosed_policy=unclosed_policy,
+        logger=logger,
+    )
+
+    # Phase1: 停止ボタンの出現を待つ（生成開始の合図）
+    stop_appeared = False
+    p1 = time.time() + 1.5
+    while time.time() < p1:
+        if _cancelled():
+            return ""
+        if _is_stop_button_present(driver, config):
+            stop_appeared = True
+            logger.info("[stream] stop_button_appeared +%.2fs", time.time() - t0)
+            break
+        time.sleep(0.05)
+
+    started = False
+    full_text = ""
+    last_len = -1
+    stable_polls = 0
+
+    while time.time() < deadline:
+        if _cancelled():
+            logger.info("[stream] cancelled +%.2fs", time.time() - t0)
+            return full_text
+        text = _latest_response_text(driver, selectors)
+        if text and (started or text != baseline_text):
+            if not started:
+                started = True
+                logger.info("[stream] response_started +%.2fs", time.time() - t0)
+            full_text = text
+            parser.feed(text, final=False)
+
+        present = _is_stop_button_present(driver, config)
+        if started and stop_appeared and not present:
+            time.sleep(0.25)
+            final = _latest_response_text(driver, selectors)
+            if final and len(final) >= len(full_text):
+                full_text = final
+            parser.finish(full_text)
+            logger.info("[stream] complete len=%d +%.2fs", len(full_text), time.time() - t0)
+            return full_text
+
+        if started and not stop_appeared:
+            if len(text) == last_len:
+                stable_polls += 1
+            else:
+                stable_polls = 0
+                last_len = len(text)
+            if stable_polls >= 8 and parser.consumed > 0:
+                parser.finish(full_text)
+                logger.info("[stream] stabilized len=%d +%.2fs", len(full_text), time.time() - t0)
+                return full_text
+
+        time.sleep(config.response_poll_seconds)
+
+    if full_text:
+        parser.finish(full_text)
+        logger.warning("[stream] timeout flush len=%d", len(full_text))
+        return full_text
+    raise TimeoutError("Timed out while streaming Grok response.")

@@ -5,6 +5,7 @@ import json
 import random
 import re
 import subprocess
+import threading
 import traceback
 import urllib.error
 import urllib.parse
@@ -401,7 +402,13 @@ def _round3(value: float) -> float:
     return round(float(value), 3)
 
 
-def _run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _run_subprocess(
+    command: list[str],
+    cwd: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    # timeout=None は従来動作（無制限）。イベント送信のように
+    # 名前付きパイプ書き込みで固まり得る呼び出しだけ明示的に上限を与える。
     return subprocess.run(
         command,
         cwd=str(cwd) if cwd else None,
@@ -411,6 +418,7 @@ def _run_subprocess(command: list[str], cwd: Path | None = None) -> subprocess.C
         errors="replace",
         env=with_utf8_env(),
         check=True,
+        timeout=timeout,
     )
 
 
@@ -479,7 +487,10 @@ def _send_sequence_line_event(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    result = _run_subprocess(event_command_base + ["-JsonFile", str(event_path)])
+    result = _run_subprocess(
+        event_command_base + ["-JsonFile", str(event_path)],
+        timeout=float(getattr(args, "event_send_timeout", 15.0) or 15.0),
+    )
     return str(event_path), result.stdout, result.stderr
 
 
@@ -585,6 +596,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="PowerShell sender script path.",
     )
     parser.add_argument("--pipe-name", default="kks_voice_face_events", help="Named pipe name.")
+    parser.add_argument("--event-send-timeout", type=float, default=15.0, help="Hard timeout (sec) for each event-sender PowerShell call. Bounds pipe connect+write so a stuck game pipe cannot hang the stream.")
+    parser.add_argument("--event-connect-timeout-ms", type=int, default=8000, help="Named pipe connect timeout (ms) passed to the sender as -ConnectTimeoutMs.")
     parser.add_argument("--target-host", default="", help="Remote bridge host. Empty uses local named pipe send.")
     parser.add_argument("--target-port", type=int, default=18765, help="Remote bridge port.")
     parser.add_argument("--target-endpoint", default="/voice-face-event", help="Remote bridge endpoint path.")
@@ -652,6 +665,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-send-event", action="store_true", help="Do not send KKS event after wav merge.")
     parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Grok応答を文ごとにストリーム読みし、文確定ごとに即SBV2合成→speak_sequence/append送信（即時再生）。grok_browser + --sbv2-server-url 指定時のみ有効。",
+    )
+    parser.add_argument(
+        "--sd-unclosed-policy",
+        default="auto",
+        choices=["auto", "prompt", "speak", "discard"],
+        help="ストリーム終了時にSD終了タグが無い場合の処理: auto(日本語=喋る/英語=送信) / prompt / speak / discard。",
+    )
+    parser.add_argument(
         "--conversion-json",
         default="",
         help="変換辞書JSON ([{\"from\":\"...\",\"to_sbv2\":\"...\",\"to_display\":\"...\",\"display_apply\":true}])。to_sbv2は単一文字列/改行区切り/|区切り/JSON配列を受け付け、送信時にランダム1件を使用。",
@@ -660,6 +684,272 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subtitle-translate-source", default="auto", help="Subtitle translation source language.")
     parser.add_argument("--subtitle-translate-target", default="", help="Subtitle translation target language.")
     return parser
+
+
+def _sd_send_worker(prompt: str, args: argparse.Namespace, logger) -> None:
+    """SDプロンプト送信（別スレッド・喋りを止めない）。"""
+    try:
+        result = send_a1111_txt2img(
+            prompt=prompt,
+            host=args.sd_prompt_target_host,
+            port=int(args.sd_prompt_target_port),
+            endpoint=args.sd_prompt_endpoint,
+            token=args.sd_prompt_token,
+            timeout_sec=float(args.sd_prompt_timeout),
+            model_checkpoint=args.sd_prompt_model_checkpoint,
+            vae=args.sd_prompt_vae,
+            clip_skip=int(args.sd_prompt_clip_skip),
+            append_prompt=args.sd_prompt_append_prompt,
+            negative_prompt=args.sd_prompt_negative_prompt,
+            steps=int(args.sd_prompt_steps),
+            width=int(args.sd_prompt_width),
+            height=int(args.sd_prompt_height),
+            cfg_scale=float(args.sd_prompt_cfg_scale),
+            sampler_name=args.sd_prompt_sampler_name,
+            scheduler=args.sd_prompt_scheduler,
+            seed=int(args.sd_prompt_seed),
+            subseed=int(args.sd_prompt_subseed),
+            subseed_strength=float(args.sd_prompt_subseed_strength),
+            batch_size=int(args.sd_prompt_batch_size),
+            n_iter=int(args.sd_prompt_n_iter),
+            restore_faces=bool(args.sd_prompt_restore_faces),
+            tiling=bool(args.sd_prompt_tiling),
+            save_images=bool(args.sd_prompt_save_images),
+            send_images=bool(args.sd_prompt_send_images),
+            enable_hr=bool(args.sd_prompt_enable_hr),
+            hr_scale=float(args.sd_prompt_hr_scale),
+            hr_upscaler=args.sd_prompt_hr_upscaler,
+            hr_second_pass_steps=int(args.sd_prompt_hr_second_pass_steps),
+            denoising_strength=float(args.sd_prompt_denoising_strength),
+            hr_resize_x=int(args.sd_prompt_hr_resize_x),
+            hr_resize_y=int(args.sd_prompt_hr_resize_y),
+            hr_sampler_name=args.sd_prompt_hr_sampler_name,
+            hr_scheduler=args.sd_prompt_hr_scheduler,
+            hr_checkpoint_name=args.sd_prompt_hr_checkpoint_name,
+            hr_prompt=args.sd_prompt_hr_prompt,
+            hr_negative_prompt=args.sd_prompt_hr_negative_prompt,
+            extra_payload_json=args.sd_prompt_extra_payload_json,
+        )
+        logger.info("sd_prompt_send(stream) ok=%d status=%d url=%s", int(result.ok), result.status, result.url)
+    except Exception as exc:
+        logger.error("sd_prompt_send(stream) failed: %s", exc)
+
+
+def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> int:
+    """--stream 経路: Grokを文ごとにストリーム読みし、文確定ごとに即合成→speak_sequence/append送信。
+    SDブロックはENDで即送信（読み上げ到達前）。既存バッチ経路とは独立。"""
+    from .browser import connect_existing_debug_chrome
+    from .grok_client import send_text, stream_sentences
+
+    sbv2_server_url = (args.sbv2_server_url or "").strip()
+    if not args.model_name.strip():
+        raise RuntimeError("--model-name is required for --stream.")
+
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = (base_dir / output_dir).resolve()
+    run_dir = output_dir / datetime.now().strftime("grok_tts_%Y%m%d_%H%M%S")
+    parts_dir = run_dir / "parts"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    session_id = run_dir.name
+    requested_model_file = (args.model_file or "").strip()
+
+    conversion_dict: list[dict[str, Any]] = []
+    if args.conversion_json.strip():
+        try:
+            conversion_dict = json.loads(args.conversion_json)
+        except Exception:
+            logger.warning("conversion_json parse failed, skipping")
+    random_pick_cache: dict[str, str] = {}
+
+    event_face_send_mode = _normalize_face_send_mode(args.face_send_mode)
+    event_face_preset_id = str(args.face_preset_id or "").strip()
+    event_face_preset_name = str(args.face_preset_name or "").strip()
+    event_face_preset_random = bool(args.face_preset_random)
+    event_face = int(args.face)
+    event_keep_current_face = bool(args.keep_current_face)
+
+    event_command_base: list[str] | None = None
+    if not args.no_send_event:
+        sender_path = Path(args.event_sender).resolve()
+        if not sender_path.exists():
+            raise FileNotFoundError(f"Event sender script not found: {sender_path}")
+        event_command_base = [
+            "powershell", "-ExecutionPolicy", "Bypass", "-File", str(sender_path), "-PipeName", args.pipe_name,
+            "-ConnectTimeoutMs", str(int(getattr(args, "event_connect_timeout_ms", 8000) or 8000)),
+        ]
+        if args.remote_http or args.target_host.strip():
+            event_command_base.append("-RemoteHttp")
+        if args.target_host.strip():
+            event_command_base.extend(["-TargetHost", args.target_host.strip(), "-TargetPort", str(args.target_port), "-TargetEndpoint", args.target_endpoint])
+            if args.target_token.strip():
+                event_command_base.extend(["-TargetToken", args.target_token.strip()])
+
+    state: dict[str, Any] = {
+        "idx": 0,
+        "lines": [],
+        "display": [],
+        "durations": [],
+        "wavs": [],
+        "stdout": "",
+        "stderr": "",
+        "sd_prompt_detected": False,
+        "sd_prompt": "",
+        "sd_prompt_send_attempted": False,
+    }
+    sd_threads: list[threading.Thread] = []
+    sd_seen_prompts: set[str] = set()
+
+    def fire_sd(prompt: str, source: str = "stream") -> None:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            logger.warning("sd_prompt_empty(%s)", source)
+            return
+
+        if prompt in sd_seen_prompts:
+            logger.info("sd_prompt_duplicate_skip(%s) len=%d", source, len(prompt))
+            return
+
+        sd_seen_prompts.add(prompt)
+        state["sd_prompt_detected"] = True
+        state["sd_prompt"] = prompt
+
+        logger.info(
+            "sd_prompt_detected(%s) len=%d send_enabled=%d skip_send=%d",
+            source,
+            len(prompt),
+            int(bool(args.sd_prompt_send_enabled)),
+            int(bool(args.sd_skip_send)),
+        )
+
+        if not (args.sd_prompt_send_enabled and not args.sd_skip_send):
+            logger.warning(
+                "sd_prompt_send_skipped(%s) reason=disabled_or_skip send_enabled=%d skip_send=%d",
+                source,
+                int(bool(args.sd_prompt_send_enabled)),
+                int(bool(args.sd_skip_send)),
+            )
+            return
+
+        state["sd_prompt_send_attempted"] = True
+        th = threading.Thread(target=_sd_send_worker, args=(prompt, args, logger), daemon=True)
+        th.start()
+        sd_threads.append(th)
+
+    def on_sentence(sentence: str) -> None:
+        send_conv = _apply_conversion_rules(sentence, conversion_dict, display_only=False, random_pick_cache=random_pick_cache, logger=logger)
+        disp_conv = _apply_conversion_rules(sentence, conversion_dict, display_only=True, random_pick_cache=random_pick_cache, logger=logger)
+        if not send_conv.strip():
+            return
+        state["idx"] += 1
+        idx = int(state["idx"])
+        out_path = parts_dir / f"line_{idx:03d}.wav"
+        _tts_via_http_server(
+            server_url=sbv2_server_url, text=send_conv, model_name=args.model_name, model_file=requested_model_file,
+            speaker=args.speaker, style=args.style, style_weight=args.style_weight, sdp_ratio=args.sdp_ratio,
+            noise=args.noise, noise_w=args.noise_w, length=args.length, output_path=out_path,
+        )
+        duration = _wav_duration_sec(out_path)
+        state["lines"].append(send_conv)
+        state["display"].append(disp_conv)
+        state["durations"].append(duration)
+        state["wavs"].append(str(out_path))
+        if event_command_base is not None:
+            try:
+                _, so, se = _send_sequence_line_event(
+                    event_command_base=event_command_base, run_dir=run_dir, session_id=session_id,
+                    line_index=idx, wav_path=out_path, display_text=disp_conv, duration=duration, args=args,
+                    event_face_send_mode=event_face_send_mode, event_face_preset_name=event_face_preset_name,
+                    event_face_preset_id=event_face_preset_id, event_face_preset_random=event_face_preset_random,
+                    event_face=event_face, event_keep_current_face=event_keep_current_face, include_face=(idx == 1),
+                )
+                state["stdout"] = (state["stdout"] + "\n" + so).strip() if state["stdout"] else so
+                state["stderr"] = (state["stderr"] + "\n" + se).strip() if state["stderr"] else se
+            except subprocess.CalledProcessError as exc:
+                logger.error("event_send(stream) line=%d failed rc=%s stderr=%r", idx, exc.returncode, str(exc.stderr or "")[:240])
+            except subprocess.TimeoutExpired as exc:
+                # 名前付きパイプの書き込みが詰まったケース。その行は捨てて配信継続（固着防止）。
+                logger.error("event_send(stream) line=%d timeout after %ss; skipped (game pipe stuck?)", idx, getattr(exc, "timeout", "?"))
+        logger.info("[stream] spoke #%d dur=%.2fs text=%.30s", idx, duration, send_conv)
+
+    driver = connect_existing_debug_chrome(config.debug_port)
+    baseline, _ = send_text(driver, config, args.text, logger)
+    full = stream_sentences(
+        driver, config, logger, baseline, on_sentence,
+        on_sd_prompt=fire_sd,
+        sd_begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+        sd_end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        unclosed_policy=getattr(args, "sd_unclosed_policy", "auto"),
+    )
+
+    # stream_sentences 側が SD ブロックを取り逃がした場合の保険。
+    # full response から再抽出して、まだ送っていなければ送る。
+    _, fallback_sd_prompt = extract_sd_prompt_block(
+        full,
+        begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+        end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+    )
+    if fallback_sd_prompt:
+        fire_sd(fallback_sd_prompt, source="full_fallback")
+
+    # SD送信スレッドの完了を待つ（subprocess終了で殺さない）
+    join_timeout = max(1.0, float(args.sd_prompt_timeout) + 5.0)
+    for th in sd_threads:
+        th.join(timeout=join_timeout)
+
+    response_text = "\n".join(state["lines"])
+    response_display = "\n".join(state["display"])
+    total_dur = sum(state["durations"])
+    (run_dir / "response.txt").write_text(response_text, encoding="utf-8")
+
+    _print_json(
+        {
+            "ok": True, "error": "",
+            "response": response_text,
+            "response_original": full,
+            "response_display": response_display,
+            "response_display_translated": False,
+            "response_raw_length": len(full),
+            "response_capped_length": len(response_text),
+            "response_truncated": False,
+            "max_response_chars": int(args.max_response_chars),
+            "line_count": int(state["idx"]),
+            "line_texts": state["lines"],
+            "display_line_texts": state["display"],
+            "line_wavs": state["wavs"],
+            "line_durations": [_round3(v) for v in state["durations"]],
+            "total_wav_duration": _round3(total_dur),
+            "merged_wav": "",
+            "response_file": str(run_dir / "response.txt"),
+            "event_sent": int(state["idx"]) > 0 and event_command_base is not None,
+            "event_send_mode": "stream",
+            "sequence_sent": int(state["idx"]) > 0 and event_command_base is not None,
+            "sequence_session_id": session_id,
+            "sequence_event_file": "",
+            "event_stdout": state["stdout"],
+            "event_stderr": state["stderr"],
+            "event_face_send_mode": event_face_send_mode,
+            "event_face_preset_name": event_face_preset_name,
+            "event_face_preset_id": event_face_preset_id,
+            "event_face_preset_random": event_face_preset_random,
+            "event_face_selected_name": event_face_preset_name,
+            "event_face_selected_id": event_face_preset_id,
+            "event_face": event_face,
+            "event_keep_current_face": event_keep_current_face,
+            "model_name": args.model_name,
+            "model_file": requested_model_file or "(server-auto)",
+            "llm_backend": _safe_normalize_llm_backend(args.llm_backend),
+            "sd_prompt_detected": bool(state["sd_prompt_detected"]),
+            "sd_prompt": str(state["sd_prompt"] or ""),
+            "sd_prompt_length": len(str(state["sd_prompt"] or "")),
+            "sd_prompt_send_enabled": bool(args.sd_prompt_send_enabled),
+            "sd_prompt_send_attempted": bool(state["sd_prompt_send_attempted"]),
+            "sd_prompt_send_result": {},
+            "stream": True,
+        }
+    )
+    return 0
 
 
 def main() -> int:
@@ -706,6 +996,16 @@ def main() -> int:
             raise RuntimeError("--text or --response-text is required unless --list-models is used.")
 
         args.pipe_name = _normalize_pipe_name(args.pipe_name)
+
+        # ── ストリーミング即時再生（オプトイン） ──────────────────────────────
+        if getattr(args, "stream", False):
+            backend = _safe_normalize_llm_backend(args.llm_backend)
+            if backend == "grok_browser" and (args.sbv2_server_url or "").strip() and args.text.strip() and not args.response_text.strip():
+                logger.info("stream_mode_enabled backend=%s server=%s", backend, args.sbv2_server_url)
+                return _run_streaming(args, config, logger, base_dir)
+            logger.warning(
+                "stream requested but requires grok_browser + --sbv2-server-url + --text (no --response-text); falling back to batch"
+            )
 
         if args.response_text.strip():
             source = "response-text"
@@ -1216,7 +1516,10 @@ def main() -> int:
                 )
             else:
                 try:
-                    event_result = _run_subprocess(event_command)
+                    event_result = _run_subprocess(
+                        event_command,
+                        timeout=float(getattr(args, "event_send_timeout", 15.0) or 15.0),
+                    )
                     event_stdout = event_result.stdout
                     event_stderr = event_result.stderr
                     event_sent = True
@@ -1237,6 +1540,15 @@ def main() -> int:
                         str(exc.returncode),
                         event_stdout[:240],
                         event_stderr[:240],
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    event_stdout = ""
+                    event_stderr = f"event send timeout after {getattr(exc, 'timeout', '?')}s"
+                    logger.error(
+                        "event_send_result status=timeout mode=%s audio_mode=%s detail=%s",
+                        event_face_send_mode,
+                        args.event_send_mode,
+                        event_stderr,
                     )
                     raise RuntimeError(f"event sender failed returncode={exc.returncode}") from exc
 

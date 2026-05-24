@@ -249,8 +249,8 @@ class PipelineWorker(QObject):
             return False
 
         try:
-            proc.terminate()
-            self.log.emit(f"[interrupt] current pipeline terminated reason={reason}")
+            self._kill_process_tree(proc)
+            self.log.emit(f"[interrupt] current pipeline terminated (tree) reason={reason}")
             return True
         except Exception as exc:
             self.log.emit(f"[interrupt] terminate failed reason={reason}: {exc}")
@@ -305,7 +305,9 @@ class PipelineWorker(QObject):
         src = (source or "external").strip() or "external"
         dropped = self._drain_text_queue()
         terminated = self._terminate_current_pipeline(f"new_text:{src}")
-        self._send_voiceface_stop(f"new_text:{src}")
+        # 前倒しの即stopは送らない。今の声はそのまま流し続け、
+        # 新リクエストの1行目 speak_sequence(interrupt=1) が、新音声が
+        # 出来た瞬間にゲーム側で停止＋キュー破棄＋新規再生をやる（無音の間を作らない）。
 
         try:
             self._text_queue.put_nowait(normalized)
@@ -691,6 +693,7 @@ class PipelineWorker(QObject):
                 last_prompt_iter = iter_at_start
 
             sync_enabled = bool(getattr(self._cfg, "sd_blankmap_sync_enabled", True))
+            slideshow_sync_active = sync_enabled
             status_current_path = ""
             status_play_mode = ""
             if sync_enabled:
@@ -713,10 +716,12 @@ class PipelineWorker(QObject):
                 if not bool(status.get("enabled", False)):
                     now = time.monotonic()
                     if now - last_wait_log_at >= 10.0:
-                        self.log.emit("[sd-forever] BlankMapAdd slideshow disabled; generation paused")
+                        self.log.emit("[sd-forever] BlankMapAdd slideshow disabled; generate anyway without slideshow sync")
                         last_wait_log_at = now
-                    time.sleep(scan_interval)
-                    continue
+
+                    # BlankMapAdd の slideshow が無効でも、SD 生成自体は止めない。
+                    # ここで止めると、プロンプトは検出・保存されても A1111 へ送られない。
+                    slideshow_sync_active = False
 
                 if waiting_for_slideshow_consume:
                     consumed = False
@@ -806,7 +811,7 @@ class PipelineWorker(QObject):
                     break
                 time.sleep(0.2)
             send_thread.join(timeout=max(1.0, float(self._cfg.sd_prompt_timeout_sec or 40.0)))
-            if sync_enabled and (not interrupted) and send_state.get("done") and send_state.get("ok"):
+            if slideshow_sync_active and (not interrupted) and send_state.get("done") and send_state.get("ok"):
                 # 新しいプロンプトの絵はQueueモードでも待たせず即表示させる
                 if prompt_changed and status_play_mode == "Queue":
                     if self._post_blankmap_slideshow_show_latest():
@@ -1063,6 +1068,30 @@ class PipelineWorker(QObject):
                     return True
         return False
 
+    def _kill_process_tree(self, proc: Optional[subprocess.Popen]) -> None:
+        """サブプロセスを子孫ごと殺す。
+
+        proc.terminate() はトップのpythonしか殺さないため、子のPowerShell
+        (イベント送信) が stdout/stderr パイプを掴んだまま残ると communicate()
+        が EOF を待って永久ブロックする。taskkill /T で木ごと落としてパイプを解放する。
+        """
+        if proc is None:
+            return
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def _run_cmd(self, cmd: list[str], timeout_sec: float) -> subprocess.CompletedProcess:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1074,12 +1103,18 @@ class PipelineWorker(QObject):
         try:
             stdout, stderr = proc.communicate(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            stdout, stderr = proc.communicate()
+            self.log.emit(f"[run_cmd] timeout {timeout_sec}s; killing process tree pid={proc.pid}")
+            self._kill_process_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.log.emit("[run_cmd] communicate still blocked after tree kill; abandoning output")
+                stdout, stderr = "", ""
         finally:
             with self._proc_lock:
                 self._current_proc = None
-        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        rc = proc.poll()
+        return subprocess.CompletedProcess(cmd, rc if rc is not None else -9, stdout, stderr)
 
     def _resolve_scripts(self) -> tuple[Path, Path]:
         # ローカル同梱スクリプトを優先、なければ従来のkks_rootパスにフォールバック
@@ -1840,6 +1875,11 @@ class PipelineWorker(QObject):
             sbv2_url = self._sbv2_server_url()
             if sbv2_url:
                 p_cmd.extend(["--sbv2-server-url", sbv2_url])
+        # 即時ストリーミング: grok_browser + SBV2サーバーモード時のみ tts_event_cli 側で有効化される。
+        # それ以外（local_openai / サブプロセス合成）では CLI が自動でバッチへフォールバックする。
+        if getattr(self._cfg, "grok_stream_enabled", True):
+            p_cmd.append("--stream")
+            p_cmd.extend(["--sd-unclosed-policy", str(getattr(self._cfg, "sd_unclosed_policy", "auto") or "auto")])
         if combined_conv:
             p_cmd.extend(["--conversion-json", json.dumps(combined_conv, ensure_ascii=False)])
         if self._cfg.translate_response_enabled:

@@ -3019,6 +3019,30 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, msg: str) -> None:
         self.log_text.appendPlainText(msg)
+        self._gui_log_to_file(msg)
+
+    def _gui_log_to_file(self, msg: str) -> None:
+        # GUI/ワーカーの全ログを _logs/gui_YYYYMMDD.log へ追記保存する。
+        # grok_bridge_*.log と時刻で突き合わせて割り込み挙動を後追いするため。
+        # 失敗してもGUIは止めない。
+        try:
+            now = datetime.now()
+            date_key = now.strftime("%Y%m%d")
+            fh = getattr(self, "_gui_log_fh", None)
+            if fh is None or getattr(self, "_gui_log_date", None) != date_key:
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+                log_dir = PROJECT_ROOT / "_logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                self._gui_log_fh = open(log_dir / f"gui_{date_key}.log", "a", encoding="utf-8", newline="\n")
+                self._gui_log_date = date_key
+            self._gui_log_fh.write(f"{now.strftime('%H:%M:%S')} {msg}\n")
+            self._gui_log_fh.flush()
+        except Exception:
+            pass
 
     def _install_clipboard_support(self) -> None:
         for table in (self.conversion_table, self.transcribe_conversion_table, self.filter_table):
