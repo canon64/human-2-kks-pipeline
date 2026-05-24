@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
         input_group_w = QWidget(); input_group_w.setLayout(input_group)
         form.addRow("あなたの入力", input_group_w)
 
-        # ── ひかりの返事（ひかりが返す側） ──────────────────────────
+        # ── 女キャラの返事（女キャラが返す側） ──────────────────────────
         reply_group = QVBoxLayout()
         reply_voice_row = QHBoxLayout()
         self.translate_voice_enabled_chk = QCheckBox("声を翻訳")
@@ -597,7 +597,7 @@ class MainWindow(QMainWindow):
         reply_group.addLayout(reply_voice_row)
         reply_group.addLayout(reply_sub_row)
         reply_group_w = QWidget(); reply_group_w.setLayout(reply_group)
-        form.addRow("ひかりの返事", reply_group_w)
+        form.addRow("女キャラの返事", reply_group_w)
 
         self.pipeline_python_edit = QLineEdit(_local_py)
         pp_btn = QPushButton("参照")

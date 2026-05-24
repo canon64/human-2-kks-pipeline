@@ -683,7 +683,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subtitle-translate-enabled", action="store_true", help="Translate display subtitles from SBV2 send text before event send.")
     parser.add_argument("--subtitle-translate-source", default="auto", help="Subtitle translation source language.")
     parser.add_argument("--subtitle-translate-target", default="", help="Subtitle translation target language.")
-    parser.add_argument("--voice-translate-enabled", action="store_true", help="Translate the reply into the voice target language before SBV2 synthesis (ひかりが翻訳後の言語で喋る).")
+    parser.add_argument("--voice-translate-enabled", action="store_true", help="Translate the reply into the voice target language before SBV2 synthesis (女キャラが翻訳後の言語で喋る).")
     parser.add_argument("--voice-translate-source", default="auto", help="Voice (SBV2) translation source language.")
     parser.add_argument("--voice-translate-target", default="", help="Voice (SBV2) translation target language.")
     return parser
