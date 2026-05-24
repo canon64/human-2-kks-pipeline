@@ -842,6 +842,10 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
         disp_conv = _apply_conversion_rules(sentence, conversion_dict, display_only=True, random_pick_cache=random_pick_cache, logger=logger)
         if not send_conv.strip():
             return
+        # 字幕翻訳: 非ストリーム経路（_split後の一括翻訳）と同じ _translate_text を、
+        # 本番(stream)でも各行で使い、送信テキストから表示字幕を翻訳する（経路を統一）。
+        if args.subtitle_translate_enabled and str(args.subtitle_translate_target or "").strip():
+            disp_conv = _translate_text(send_conv, args.subtitle_translate_source, args.subtitle_translate_target, logger)
         state["idx"] += 1
         idx = int(state["idx"])
         out_path = parts_dir / f"line_{idx:03d}.wav"
@@ -909,7 +913,9 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
             "response": response_text,
             "response_original": full,
             "response_display": response_display,
-            "response_display_translated": False,
+            "response_display_translated": bool(
+                args.subtitle_translate_enabled and str(args.subtitle_translate_target or "").strip()
+            ),
             "response_raw_length": len(full),
             "response_capped_length": len(response_text),
             "response_truncated": False,
