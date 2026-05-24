@@ -582,6 +582,17 @@ class MainWindow(QMainWindow):
         subtitle_translate_w = QWidget(); subtitle_translate_w.setLayout(subtitle_translate_row)
         form.addRow("ゲーム字幕", subtitle_translate_w)
 
+        voice_translate_row = QHBoxLayout()
+        self.translate_voice_enabled_chk = QCheckBox("返事をSBV2用に翻訳")
+        self.translate_voice_enabled_chk.setChecked(False)
+        self.translate_voice_target_edit = _make_language_combo("ja")
+        voice_translate_row.addWidget(self.translate_voice_enabled_chk)
+        voice_translate_row.addWidget(QLabel("声 →"))
+        voice_translate_row.addWidget(self.translate_voice_target_edit)
+        voice_translate_row.addStretch(1)
+        voice_translate_w = QWidget(); voice_translate_w.setLayout(voice_translate_row)
+        form.addRow("返答音声(SBV2)", voice_translate_w)
+
         self.pipeline_python_edit = QLineEdit(_local_py)
         pp_btn = QPushButton("参照")
         pp_btn.clicked.connect(lambda: self._pick_file(self.pipeline_python_edit, "Grok/TTS Python"))
@@ -1970,6 +1981,12 @@ class MainWindow(QMainWindow):
                 "--subtitle-translate-source", "auto",
                 "--subtitle-translate-target", cfg.translate_response_target,
             ])
+        if cfg.translate_voice_enabled:
+            cmd.append("--voice-translate-enabled")
+            cmd.extend([
+                "--voice-translate-source", "auto",
+                "--voice-translate-target", cfg.translate_voice_target,
+            ])
         if no_send_event:
             cmd.append("--no-send-event")
         proc = subprocess.run(
@@ -3340,6 +3357,8 @@ class MainWindow(QMainWindow):
         self.translate_input_subtitle_original_chk.toggled.connect(self._on_any_setting_changed)
         self.translate_response_enabled_chk.toggled.connect(self._on_any_setting_changed)
         self.translate_response_target_edit.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.translate_voice_enabled_chk.toggled.connect(self._on_any_setting_changed)
+        self.translate_voice_target_edit.currentIndexChanged.connect(self._on_any_setting_changed)
         self.faster_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_model_edit.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_device_combo.currentTextChanged.connect(self._on_any_setting_changed)

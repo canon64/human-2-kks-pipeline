@@ -140,6 +140,8 @@ class AppConfig:
     translate_input_subtitle_original: bool = True
     translate_response_enabled: bool = False
     translate_response_target: str = "en"
+    translate_voice_enabled: bool = False
+    translate_voice_target: str = "ja"
     filter_phrases: list[dict] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)
     conversion_dict: list[dict] = field(default_factory=list)

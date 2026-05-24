@@ -683,6 +683,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subtitle-translate-enabled", action="store_true", help="Translate display subtitles from SBV2 send text before event send.")
     parser.add_argument("--subtitle-translate-source", default="auto", help="Subtitle translation source language.")
     parser.add_argument("--subtitle-translate-target", default="", help="Subtitle translation target language.")
+    parser.add_argument("--voice-translate-enabled", action="store_true", help="Translate the reply into the voice target language before SBV2 synthesis (ひかりが翻訳後の言語で喋る).")
+    parser.add_argument("--voice-translate-source", default="auto", help="Voice (SBV2) translation source language.")
+    parser.add_argument("--voice-translate-target", default="", help="Voice (SBV2) translation target language.")
     return parser
 
 
@@ -846,11 +849,15 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
         # 本番(stream)でも各行で使い、送信テキストから表示字幕を翻訳する（経路を統一）。
         if args.subtitle_translate_enabled and str(args.subtitle_translate_target or "").strip():
             disp_conv = _translate_text(send_conv, args.subtitle_translate_source, args.subtitle_translate_target, logger)
+        # 声の翻訳: 有効なら、ひかりが喋る文を翻訳してからSBV2へ渡す（字幕とは独立）。
+        speak_text = send_conv
+        if args.voice_translate_enabled and str(args.voice_translate_target or "").strip():
+            speak_text = _translate_text(send_conv, args.voice_translate_source, args.voice_translate_target, logger)
         state["idx"] += 1
         idx = int(state["idx"])
         out_path = parts_dir / f"line_{idx:03d}.wav"
         _tts_via_http_server(
-            server_url=sbv2_server_url, text=send_conv, model_name=args.model_name, model_file=requested_model_file,
+            server_url=sbv2_server_url, text=speak_text, model_name=args.model_name, model_file=requested_model_file,
             speaker=args.speaker, style=args.style, style_weight=args.style_weight, sdp_ratio=args.sdp_ratio,
             noise=args.noise, noise_w=args.noise_w, length=args.length, output_path=out_path,
         )
@@ -1144,6 +1151,14 @@ def main() -> int:
                     len(display_lines),
                 )
                 display_lines = list(lines)
+        # 声の翻訳: 有効なら各行を翻訳して、その文をSBV2に渡す（字幕とは独立）。
+        if args.voice_translate_enabled and str(args.voice_translate_target or "").strip():
+            speak_lines = [
+                _translate_text(line, args.voice_translate_source, args.voice_translate_target, logger)
+                for line in lines
+            ]
+        else:
+            speak_lines = list(lines)
         logger.info(
             "grok_response_processed raw_len=%d capped_len=%d send_len=%d display_len=%d line_count=%d max_line_chars=%d",
             response_raw_len,
@@ -1282,8 +1297,8 @@ def main() -> int:
                 args.model_name,
                 requested_model_file or "(server-auto)",
             )
-            expected_part_names = [f"line_{i+1:03d}.wav" for i in range(len(lines))]
-            for i, line_text in enumerate(lines):
+            expected_part_names = [f"line_{i+1:03d}.wav" for i in range(len(speak_lines))]
+            for i, line_text in enumerate(speak_lines):
                 out_path = parts_dir / expected_part_names[i]
                 _tts_via_http_server(
                     server_url=sbv2_server_url,
@@ -1352,7 +1367,7 @@ def main() -> int:
             request_json_path = run_dir / "tts_request.json"
             expected_part_names = _write_tts_request_json(
                 request_json_path,
-                lines,
+                speak_lines,
                 speaker=args.speaker,
                 style=args.style,
                 style_weight=args.style_weight,

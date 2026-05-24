@@ -346,6 +346,8 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         translate_input_subtitle_original=bool(window.translate_input_subtitle_original_chk.isChecked()),
         translate_response_enabled=bool(window.translate_response_enabled_chk.isChecked()),
         translate_response_target=_combo_value(window.translate_response_target_edit, "en"),
+        translate_voice_enabled=bool(window.translate_voice_enabled_chk.isChecked()),
+        translate_voice_target=_combo_value(window.translate_voice_target_edit, "ja"),
         sbv2_mode=_normalize_sbv2_mode(
             window.sbv2_mode_combo.currentData()
             if window.sbv2_mode_combo.currentData() is not None
@@ -506,6 +508,8 @@ def save_config(
         "translate_input_subtitle_original": cfg.translate_input_subtitle_original,
         "translate_response_enabled": cfg.translate_response_enabled,
         "translate_response_target": cfg.translate_response_target,
+        "translate_voice_enabled": cfg.translate_voice_enabled,
+        "translate_voice_target": cfg.translate_voice_target,
         "sbv2_mode": cfg.sbv2_mode,
         "sbv2_server_url": cfg.sbv2_server_url,
         "sbv2_server_auto_start": cfg.sbv2_server_auto_start,
@@ -691,6 +695,8 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.translate_input_subtitle_original_chk.setChecked(b("translate_input_subtitle_original", True))
         window.translate_response_enabled_chk.setChecked(b("translate_response_enabled", False))
         _set_combo_value(window.translate_response_target_edit, s("translate_response_target", "en"))
+        window.translate_voice_enabled_chk.setChecked(b("translate_voice_enabled", False))
+        _set_combo_value(window.translate_voice_target_edit, s("translate_voice_target", "ja"))
         sbv2_mode = _normalize_sbv2_mode(data.get("sbv2_mode", "auto"), "auto")
         sbv2_mode_index = max(0, window.sbv2_mode_combo.findData(sbv2_mode))
         window.sbv2_mode_combo.setCurrentIndex(sbv2_mode_index)

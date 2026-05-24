@@ -1888,6 +1888,12 @@ class PipelineWorker(QObject):
                 "--subtitle-translate-source", "auto",
                 "--subtitle-translate-target", self._cfg.translate_response_target,
             ])
+        if self._cfg.translate_voice_enabled:
+            p_cmd.append("--voice-translate-enabled")
+            p_cmd.extend([
+                "--voice-translate-source", "auto",
+                "--voice-translate-target", self._cfg.translate_voice_target,
+            ])
         # event-senderは同梱スクリプトを明示指定
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         if sender_ps1.exists():
