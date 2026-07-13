@@ -28,14 +28,32 @@ from core.io_utils import (
     wav_duration_sec as _wav_duration_sec,
     with_utf8_env as _with_utf8_env,
 )
-from core.sd_prompt_bridge import append_sd_prompt_instruction
+from core.sd_prompt_bridge import append_sd_prompt_instruction, strip_sd_prompt_blocks_for_kks
+from services.rtfw_lan_service import dispatch_transcription
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _short_error_reason(error_text: str) -> str:
+    text = str(error_text or "")
+    lower = text.lower()
+    if "winerror 10061" in lower or "connection refused" in lower:
+        return "connection_refused"
+    if "timed out" in lower or "timeout" in lower:
+        return "timeout"
+    if "name or service not known" in lower or "getaddrinfo failed" in lower:
+        return "host_not_found"
+    if "forbidden" in lower or "http 403" in lower:
+        return "forbidden"
+    return "error"
+
 
 class PipelineWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
     log = pyqtSignal(str)
+    rtfw_status = pyqtSignal(dict)
+    sd_preview_image = pyqtSignal(dict)
 
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
@@ -66,6 +84,7 @@ class PipelineWorker(QObject):
         self._sd_forever_running = False
         self._sd_forever_thread: Optional[threading.Thread] = None
         self._current_sd_prompt: str = ""
+        self._current_sd_prompt_rewrite_enabled: bool = True
         self._sd_prompt_lock = threading.Lock()
         self._sd_iteration: int = 0
         self._sd_control_server: Optional[ThreadingHTTPServer] = None
@@ -190,22 +209,26 @@ class PipelineWorker(QObject):
         self._stop_external_text_server()
         if self._transcribe_proc is not None:
             try:
-                self._transcribe_proc.terminate()
-            except Exception:
-                pass
+                self._kill_process_tree(self._transcribe_proc)
+                self.log.emit(f"[stop] transcribe server process tree killed pid={self._transcribe_proc.pid}")
+            except Exception as exc:
+                self.log.emit(f"[stop] transcribe server kill failed: {exc}")
             self._transcribe_proc = None
         if self._sbv2_proc is not None:
             try:
-                self._sbv2_proc.terminate()
-            except Exception:
-                pass
+                self._kill_process_tree(self._sbv2_proc)
+                self.log.emit(f"[stop] sbv2 server process tree killed pid={self._sbv2_proc.pid}")
+            except Exception as exc:
+                self.log.emit(f"[stop] sbv2 server kill failed: {exc}")
             self._sbv2_proc = None
         with self._proc_lock:
             if self._current_proc is not None:
                 try:
-                    self._current_proc.terminate()
-                except Exception:
-                    pass
+                    self._kill_process_tree(self._current_proc)
+                    self.log.emit(f"[stop] current pipeline process tree killed pid={self._current_proc.pid}")
+                except Exception as exc:
+                    self.log.emit(f"[stop] current pipeline kill failed: {exc}")
+                self._current_proc = None
 
     def pause(self) -> None:
         self._paused = True
@@ -513,15 +536,22 @@ class PipelineWorker(QObject):
             except Exception:
                 pass
             self._external_server = None
+        if self._external_server_thread is not None:
+            self._external_server_thread.join(timeout=2.0)
+            self._external_server_thread = None
 
     # ---------------------------------------------------------------- SD Generate forever
-    def _set_current_sd_prompt(self, prompt: str) -> None:
+    def _set_current_sd_prompt(self, prompt: str, rewrite_enabled: bool = True) -> None:
         text = str(prompt or "").strip()
         with self._sd_prompt_lock:
             self._current_sd_prompt = text
+            self._current_sd_prompt_rewrite_enabled = bool(rewrite_enabled)
             self._sd_iteration += 1
         if text:
-            self.log.emit(f"[sd-forever] prompt updated len={len(text)} iter={self._sd_iteration}")
+            self.log.emit(
+                f"[sd-forever] prompt updated len={len(text)} "
+                f"rewrite={int(bool(rewrite_enabled))} iter={self._sd_iteration}"
+            )
 
     def _start_sd_forever_loop(self) -> None:
         if not getattr(self._cfg, "sd_prompt_generate_forever", False):
@@ -614,11 +644,16 @@ class PipelineWorker(QObject):
                 int(getattr(resp, "status", 200))
             return True
         except Exception as exc:
-            self.log.emit(f"[sd-forever] show-latest failed url={url} err={str(exc)[:120]}")
+            reason = _short_error_reason(str(exc))
+            self.log.emit(
+                f"[sd-forever][blankmap] show-latest failed "
+                f"reason={reason} url={url} err={str(exc)[:160]} "
+                "hint=BlankMapAddのHTTP待受/ポート設定を確認"
+            )
             return False
 
     def _sd_forever_worker(self) -> None:
-        from core.sd_prompt_bridge import send_a1111_txt2img, post_a1111_interrupt
+        from core.sd_prompt_bridge import extract_sd_result_images, send_a1111_txt2img, post_a1111_interrupt
 
         last_send_started_at: float = 0.0
         last_prompt_iter = -1
@@ -627,13 +662,25 @@ class PipelineWorker(QObject):
         last_status_error = ""
         last_wait_log_at = 0.0
 
-        def _do_send(prompt_text: str, iter_at_start: int) -> bool:
+        def _do_send(prompt_text: str, iter_at_start: int, rewrite_enabled: bool) -> bool:
+            host = str(self._cfg.sd_prompt_target_host or "")
+            port = int(self._cfg.sd_prompt_target_port or 7860)
+            endpoint = str(self._cfg.sd_prompt_endpoint or "/sdapi/v1/txt2img")
+            if host.startswith("http://") or host.startswith("https://"):
+                send_url = host.rstrip("/") + (endpoint if endpoint.startswith("/") else "/" + endpoint)
+            else:
+                send_url = f"http://{host}:{port}{endpoint if endpoint.startswith('/') else '/' + endpoint}"
+            self.log.emit(
+                f"[sd-forever][a1111] send start iter={iter_at_start} "
+                f"url={send_url} prompt_len={len(prompt_text)} rewrite={int(bool(rewrite_enabled))} send_images=1"
+            )
             try:
                 result = send_a1111_txt2img(
                     prompt=prompt_text,
-                    host=str(self._cfg.sd_prompt_target_host or ""),
-                    port=int(self._cfg.sd_prompt_target_port or 7860),
-                    endpoint=str(self._cfg.sd_prompt_endpoint or "/sdapi/v1/txt2img"),
+                    prompt_rewrite_rules=list(getattr(self._cfg, "sd_prompt_rewrite_rules", []) or []) if rewrite_enabled else [],
+                    host=host,
+                    port=port,
+                    endpoint=endpoint,
                     token=str(self._cfg.sd_prompt_token or ""),
                     timeout_sec=float(self._cfg.sd_prompt_timeout_sec or 40.0),
                     model_checkpoint=str(self._cfg.sd_prompt_model_checkpoint or ""),
@@ -655,7 +702,7 @@ class PipelineWorker(QObject):
                     restore_faces=bool(self._cfg.sd_prompt_restore_faces),
                     tiling=bool(self._cfg.sd_prompt_tiling),
                     save_images=bool(self._cfg.sd_prompt_save_images),
-                    send_images=bool(self._cfg.sd_prompt_send_images),
+                    send_images=True,
                     enable_hr=bool(self._cfg.sd_prompt_enable_hr),
                     hr_scale=float(self._cfg.sd_prompt_hr_scale or 2.0),
                     hr_upscaler=str(self._cfg.sd_prompt_hr_upscaler or "Latent"),
@@ -670,17 +717,44 @@ class PipelineWorker(QObject):
                     hr_negative_prompt=str(self._cfg.sd_prompt_hr_negative_prompt or ""),
                     extra_payload_json=str(self._cfg.sd_prompt_extra_payload_json or ""),
                 )
-                self.log.emit(
-                    f"[sd-forever] send iter={iter_at_start} ok={int(result.ok)} status={result.status} err={result.error[:120]}"
-                )
+                reason = _short_error_reason(result.error)
+                if result.ok:
+                    self.log.emit(
+                        f"[sd-forever][a1111] send ok iter={iter_at_start} "
+                        f"status={result.status} url={result.url or send_url}"
+                    )
+                else:
+                    self.log.emit(
+                        f"[sd-forever][a1111] send failed iter={iter_at_start} "
+                        f"reason={reason} status={result.status} url={result.url or send_url} "
+                        f"err={result.error[:160]} "
+                        "hint=A1111起動/API有効/host-port-endpointを確認"
+                    )
+                for index, image_bytes in enumerate(extract_sd_result_images(result), start=1):
+                    self.sd_preview_image.emit(
+                        {
+                            "source": "sd-forever",
+                            "index": index,
+                            "bytes": image_bytes,
+                            "prompt": prompt_text,
+                            "status": int(result.status),
+                            "url": result.url,
+                        }
+                    )
                 return bool(result.ok)
             except Exception as exc:
-                self.log.emit(f"[sd-forever] send error iter={iter_at_start}: {exc}")
+                reason = _short_error_reason(str(exc))
+                self.log.emit(
+                    f"[sd-forever][a1111] send exception iter={iter_at_start} "
+                    f"reason={reason} url={send_url} err={str(exc)[:160]} "
+                    "hint=A1111起動/API有効/host-port-endpointを確認"
+                )
                 return False
 
         while self._sd_forever_running and self._running:
             with self._sd_prompt_lock:
                 prompt = self._current_sd_prompt
+                rewrite_enabled = self._current_sd_prompt_rewrite_enabled
                 iter_at_start = self._sd_iteration
             if not prompt:
                 time.sleep(0.5)
@@ -701,7 +775,13 @@ class PipelineWorker(QObject):
                 if not status.get("ok", False):
                     err = str(status.get("error", "") or "status failed")
                     if err != last_status_error:
-                        self.log.emit(f"[sd-forever] BlankMapAdd status failed url={status.get('url', '')} err={err[:160]}")
+                        reason = _short_error_reason(err)
+                        self.log.emit(
+                            f"[sd-forever][blankmap] status failed "
+                            f"reason={reason} url={status.get('url', '')} err={err[:160]} "
+                            f"sync_enabled={int(sync_enabled)} "
+                            "hint=BlankMapAdd同期先が未起動/ポート違い。使わないならBlankMapAdd同期をOFF"
+                        )
                         last_status_error = err
                     time.sleep(2.0)
                     continue
@@ -773,7 +853,7 @@ class PipelineWorker(QObject):
             send_state = {"done": False, "ok": False}
 
             def _send_and_mark() -> None:
-                send_state["ok"] = _do_send(prompt, iter_at_start)
+                send_state["ok"] = _do_send(prompt, iter_at_start, rewrite_enabled)
                 send_state["done"] = True
 
             send_thread = threading.Thread(target=_send_and_mark, daemon=True)
@@ -886,9 +966,9 @@ class PipelineWorker(QObject):
                 pass
             self._sd_control_server = None
 
-        if self._external_server_thread is not None:
-            self._external_server_thread.join(timeout=2.0)
-            self._external_server_thread = None
+        if self._sd_control_thread is not None:
+            self._sd_control_thread.join(timeout=2.0)
+            self._sd_control_thread = None
 
     @pyqtSlot()
     def run(self) -> None:
@@ -906,9 +986,12 @@ class PipelineWorker(QObject):
                 (self._cfg.output_dir / sub).mkdir(parents=True, exist_ok=True)
             self.log.emit(f"[pipeline] フォルダOK: wav={self._cfg.wav_dir}, out={self._cfg.output_dir}")
 
-            self.log.emit("[pipeline] transcribeサーバー起動中...")
-            self._start_transcribe_server()
-            self.log.emit("[pipeline] transcribeサーバーOK")
+            if str(getattr(self._cfg, "fw_backend", "local")) == "rtfw_lan":
+                self.log.emit("[pipeline] RTFW LAN selected: local transcribe server disabled")
+            else:
+                self.log.emit("[pipeline] transcribeサーバー起動中...")
+                self._start_transcribe_server()
+                self.log.emit("[pipeline] transcribeサーバーOK")
 
             self.log.emit("[pipeline] SBV2サーバー起動中...")
             self._start_sbv2_server()
@@ -1313,6 +1396,31 @@ class PipelineWorker(QObject):
             )
             raise
 
+    def _transcribe_wav_dispatch(self, wav: Path, trace_id: str = "") -> dict:
+        def local_transcriber(path: Path) -> dict:
+            return self._transcribe_via_server(path, trace_id=trace_id)
+
+        def route_status(payload: dict) -> None:
+            data = dict(payload)
+            self.rtfw_status.emit(data)
+            stage = str(data.get("stage") or "")
+            if stage == "final":
+                self.log.emit(
+                    f"[rtfw] final trace={trace_id or wav.stem} ack={data.get('acked', 0)} "
+                    f"drop={data.get('dropped', 0)} chars={data.get('textChars', 0)}"
+                )
+            elif stage == "error":
+                self.log.emit(f"[rtfw] error trace={trace_id or wav.stem} detail={data.get('error', '')}")
+            else:
+                self.log.emit(f"[rtfw] stage={stage} trace={trace_id or wav.stem}")
+
+        return dispatch_transcription(
+            self._cfg,
+            wav,
+            local_transcriber=local_transcriber,
+            status_callback=route_status,
+        )
+
     @staticmethod
     def _unique_output_path(path: Path) -> Path:
         if not path.exists():
@@ -1403,9 +1511,10 @@ class PipelineWorker(QObject):
         try:
             trace = wav.stem
             self.log.emit(f"[transcribe] {wav.name} trace={trace}")
-            t_json = self._transcribe_via_server(wav, trace_id=trace)
+            t_json = self._transcribe_wav_dispatch(wav, trace_id=trace)
             if not t_json.get("ok"):
                 raise RuntimeError(str(t_json.get("error", "transcribe failed")))
+            remote_backend = str(t_json.get("backend") or "") == "rtfw_lan"
             text = str(t_json.get("text", "")).strip()
             if not text:
                 self.log.emit(f"[info] 空テキスト: {wav.name}")
@@ -1414,12 +1523,15 @@ class PipelineWorker(QObject):
             text = self._apply_transcribe_conversion(raw_text, mode="grok")
             if self._cfg.translate_enabled:
                 translated = self._translate_text(text, self._cfg.translate_source, self._cfg.translate_target)
-                self.log.emit(f"[translate] {text[:60]} → {translated[:60]}")
+                if remote_backend:
+                    self.log.emit(f"[translate] RTFW input={len(text)} chars output={len(translated)} chars")
+                else:
+                    self.log.emit(f"[translate] {text[:60]} → {translated[:60]}")
                 text = translated
             if self._cfg.translate_enabled and self._cfg.translate_input_subtitle_original:
                 display_text = self._apply_transcribe_conversion(raw_text, mode="display")
             else:
-                display_text = self._apply_transcribe_conversion(text, mode="display")
+                display_text = self._apply_transcribe_conversion(raw_text, mode="display")
             if not text:
                 self.log.emit(f"[info] 変換後に空テキスト: {wav.name}")
                 return
@@ -1433,12 +1545,17 @@ class PipelineWorker(QObject):
                     self.log.emit(f"[save] whisper_text: {saved_transcript}")
 
             if self._paused:
-                self.log.emit(f"[pause] 破棄: {text[:40]}")
+                self.log.emit("[pause] RTFW結果を破棄" if remote_backend else f"[pause] 破棄: {text[:40]}")
                 return
             if self._is_filtered(text):
-                self.log.emit(f"[filter] 除外: {text[:60]}")
+                self.log.emit("[filter] RTFW結果を除外" if remote_backend else f"[filter] 除外: {text[:60]}")
                 return
-            self._process_text(text, wav=wav, display_text=display_text)
+            self._process_text(
+                text,
+                wav=wav,
+                display_text=display_text,
+                origin_label="RTFW LAN" if remote_backend else "",
+            )
         except Exception as exc:
             self.log.emit(f"[error] {wav.name}: {exc}")
         finally:
@@ -1641,6 +1758,21 @@ class PipelineWorker(QObject):
 
     def _schedule_response_text(self, text: str, main_index: int, delay_sec: float, session_id: str = "", line_texts=None, line_durations=None) -> None:
         """Grokの生テキストをそのままKKSへ送る（C#側でキーワードマッチ）"""
+        safe_text = strip_sd_prompt_blocks_for_kks(
+            text,
+            begin_tag=str(self._cfg.sd_prompt_begin_tag or "[SD_PROMPT_BEGIN]"),
+            end_tag=str(self._cfg.sd_prompt_end_tag or "[SD_PROMPT_END]"),
+        )
+        safe_line_texts = None
+        if line_texts:
+            safe_line_texts = [
+                strip_sd_prompt_blocks_for_kks(
+                    str(t),
+                    begin_tag=str(self._cfg.sd_prompt_begin_tag or "[SD_PROMPT_BEGIN]"),
+                    end_tag=str(self._cfg.sd_prompt_end_tag or "[SD_PROMPT_END]"),
+                )
+                for t in line_texts
+            ]
         sender_ps1 = Path(__file__).resolve().parent.parent / "send_voice_face_event.ps1"
         pipe_name = self._cfg.pipe_name
         target_host = self._cfg.target_host.strip()
@@ -1652,12 +1784,15 @@ class PipelineWorker(QObject):
         def _send():
             if not running_ref():
                 return
-            payload_obj = {"type": "response_text", "text": text, "main": main_index, "delaySeconds": delay_sec or 0.0}
+            if not safe_text.strip():
+                self.log.emit("[response_text] SDプロンプトブロックのみのためKKS送信スキップ")
+                return
+            payload_obj = {"type": "response_text", "text": safe_text, "main": main_index, "delaySeconds": delay_sec or 0.0}
             if session_id:
                 payload_obj["sessionId"] = session_id
             # 行ごとタイミング用: 行テキストと行ごと実尺（件数一致時のみ）。C#側が行ごとに発火時刻を出す。
-            if line_texts and line_durations and len(line_texts) == len(line_durations):
-                payload_obj["lineTexts"] = [str(t) for t in line_texts]
+            if safe_line_texts and line_durations and len(safe_line_texts) == len(line_durations):
+                payload_obj["lineTexts"] = [str(t) for t in safe_line_texts]
                 payload_obj["lineDurations"] = [round(float(d), 3) for d in line_durations]
             payload = json.dumps(payload_obj, ensure_ascii=False)
             json_path = ""
@@ -1765,9 +1900,9 @@ class PipelineWorker(QObject):
 
         threading.Thread(target=_send, daemon=True).start()
 
-    def _process_text(self, text: str, wav: Optional[Path] = None, manual: bool = False, display_text: Optional[str] = None) -> None:
+    def _process_text(self, text: str, wav: Optional[Path] = None, manual: bool = False, display_text: Optional[str] = None, origin_label: str = "") -> None:
         _, pipeline_script = self._resolve_scripts()
-        wav_name = wav.name if wav else "manual"
+        wav_name = wav.name if wav else (origin_label or "manual")
         # 字幕は元テキストのまま送る
         self._send_subtitle(display_text if display_text is not None else text, wav_name, "StackMale")
 
@@ -1854,6 +1989,7 @@ class PipelineWorker(QObject):
                 "--sd-prompt-hr-prompt", self._cfg.sd_prompt_hr_prompt,
                 "--sd-prompt-hr-negative-prompt", self._cfg.sd_prompt_hr_negative_prompt,
                 "--sd-prompt-extra-payload-json", self._cfg.sd_prompt_extra_payload_json,
+                "--sd-prompt-rewrite-rules-json", json.dumps(list(getattr(self._cfg, "sd_prompt_rewrite_rules", []) or []), ensure_ascii=False),
             ])
             if self._cfg.sd_prompt_token:
                 p_cmd.extend(["--sd-prompt-token", self._cfg.sd_prompt_token])
@@ -1863,8 +1999,7 @@ class PipelineWorker(QObject):
                 p_cmd.append("--sd-prompt-tiling")
             if self._cfg.sd_prompt_save_images:
                 p_cmd.append("--sd-prompt-save-images")
-            if self._cfg.sd_prompt_send_images:
-                p_cmd.append("--sd-prompt-send-images")
+            p_cmd.append("--sd-prompt-send-images")
             if self._cfg.sd_prompt_enable_hr:
                 p_cmd.append("--sd-prompt-enable-hr")
             if getattr(self._cfg, "sd_prompt_generate_forever", False):
@@ -1941,8 +2076,11 @@ class PipelineWorker(QObject):
             else:
                 self.log.emit("[event-face] mode=game_preset face=bridge_default")
 
-        label = "手動" if manual else wav_name
-        self.log.emit(f"[pipeline] {label}: {text[:40]}")
+        label = "手動" if manual else (origin_label or wav_name)
+        if origin_label == "RTFW LAN":
+            self.log.emit(f"[pipeline] {label}: chars={len(text)}")
+        else:
+            self.log.emit(f"[pipeline] {label}: {text[:40]}")
         self.log.emit(
             f"[grok-limit] request max={response_limit} enabled={int(self._cfg.max_response_chars_enabled)} text_len={len(text or '')}"
         )
@@ -2003,13 +2141,33 @@ class PipelineWorker(QObject):
                     self._set_current_sd_prompt(sd_prompt)
                 sd_result = p_json.get("sd_prompt_send_result", {})
                 if isinstance(sd_result, dict) and sd_result:
+                    sd_error = str(sd_result.get("error", "") or "")
+                    sd_reason = _short_error_reason(sd_error)
+                    sd_ok = bool(sd_result.get("ok", False))
                     self.log.emit(
-                        "[sd-prompt] send "
-                        f"ok={int(bool(sd_result.get('ok', False)))} "
+                        "[sd-prompt][a1111] send "
+                        f"ok={int(sd_ok)} "
+                        f"reason={sd_reason if not sd_ok else 'ok'} "
                         f"status={int(sd_result.get('status', 0) or 0)} "
                         f"url={str(sd_result.get('url', '') or '')} "
-                        f"error={str(sd_result.get('error', '') or '')[:120]}"
+                        f"error={sd_error[:120]}"
                     )
+                    try:
+                        from core.sd_prompt_bridge import extract_sd_result_images
+
+                        for index, image_bytes in enumerate(extract_sd_result_images(sd_result), start=1):
+                            self.sd_preview_image.emit(
+                                {
+                                    "source": "pipeline",
+                                    "index": index,
+                                    "bytes": image_bytes,
+                                    "prompt": sd_prompt,
+                                    "status": int(sd_result.get("status", 0) or 0),
+                                    "url": str(sd_result.get("url", "") or ""),
+                                }
+                            )
+                    except Exception as exc:
+                        self.log.emit(f"[sd-preview] parse failed: {exc}")
                 saved_sd_prompt = self._append_session_text(
                     "sd_prompts",
                     sd_prompt,
@@ -2055,8 +2213,16 @@ class PipelineWorker(QObject):
             if female_hold <= 0.0:
                 female_hold = _wav_duration_sec(p_json.get("merged_wav", ""))
             response_original = str(p_json.get("response_original", p_json.get("response", ""))).strip()
-            response_send = str(p_json.get("response", response_original)).strip()
-            response_display = str(p_json.get("response_display", response_original)).strip()
+            response_send = strip_sd_prompt_blocks_for_kks(
+                str(p_json.get("response", response_original)).strip(),
+                begin_tag=str(self._cfg.sd_prompt_begin_tag or "[SD_PROMPT_BEGIN]"),
+                end_tag=str(self._cfg.sd_prompt_end_tag or "[SD_PROMPT_END]"),
+            )
+            response_display = strip_sd_prompt_blocks_for_kks(
+                str(p_json.get("response_display", response_original)).strip(),
+                begin_tag=str(self._cfg.sd_prompt_begin_tag or "[SD_PROMPT_BEGIN]"),
+                end_tag=str(self._cfg.sd_prompt_end_tag or "[SD_PROMPT_END]"),
+            )
             if response_original and response_send == response_original:
                 self.log.emit("[tts-conv] send unchanged (no hit or empty replacement)")
             if response_original and response_display == response_original:

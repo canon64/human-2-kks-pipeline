@@ -15,20 +15,55 @@ test 実装（tools/realtime_voice_test/grok_client.py）と同一ロジック�
 from __future__ import annotations
 
 # 文末記号（♪… は文中多用で細切れになるため除外）
-SENTENCE_ENDERS = "。！？!?\n"
+SENTENCE_ENDERS = "。\n"
 
 
-def split_region(region: str) -> tuple[list[str], str, int]:
-    """文末記号で区切る。(完成文リスト, 末尾の未完断片, 完成文が消費した文字数) を返す。"""
+def _is_decoration(ch: str) -> bool:
+    """❤ などの装飾用絵文字・記号か。GrokのinnerTextはこれらを独立行に置くため、
+    文末記号の直後にあれば直前の文へ取り込んで「勝手な改行」を防ぐ。"""
+    o = ord(ch)
+    return (
+        0x2600 <= o <= 0x27BF        # Misc Symbols + Dingbats（❤=2764, ★, ♡ 等）
+        or 0x2B00 <= o <= 0x2BFF     # Misc Symbols and Arrows（⭐ 等）
+        or 0x1F000 <= o <= 0x1FAFF   # 絵文字ブロック
+        or 0x1F1E6 <= o <= 0x1F1FF   # 地域指示記号
+        or o in (0xFE0F, 0x200D, 0x20E3, 0x2122, 0x2139)  # 異体字selector/ZWJ等
+    )
+
+
+def split_region(region: str) -> tuple[list[str], str, int, list[int]]:
+    """文末記号で区切る。
+    文末記号の直後に続く装飾絵文字（間の空白・改行を跨ぐ）は直前の文へ取り込む。
+    返り値: (完成文リスト, 末尾の未完断片, 消費文字数, 各完成文の開始rawインデックス)。"""
     out: list[str] = []
+    starts: list[int] = []
     start = 0
-    for i, ch in enumerate(region):
+    n = len(region)
+    i = 0
+    while i < n:
+        ch = region[i]
         if ch in SENTENCE_ENDERS:
-            seg = region[start : i + 1].strip()
+            end = i + 1
+            # 直後の空白/改行をスキップした先に装飾絵文字が並んでいれば取り込む
+            j = end
+            while j < n and region[j] in " \t\r\n":
+                j += 1
+            deco = ""
+            k = j
+            while k < n and _is_decoration(region[k]):
+                deco += region[k]
+                k += 1
+            if deco:
+                end = k  # 装飾絵文字（と間の空白）まで消費
+            seg = (region[start : i + 1] + deco).strip()
             if seg:
                 out.append(seg)
-            start = i + 1
-    return out, region[start:], start
+                starts.append(start)
+            start = end
+            i = end
+            continue
+        i += 1
+    return out, region[start:], start, starts
 
 
 def _ifind(text: str, tag: str) -> int:
@@ -78,7 +113,12 @@ class GrokStreamParser:
         self.sd_buf = ""
 
     def _emit(self, region: str, flush_all: bool) -> int:
-        sents, tail, used = split_region(region)
+        sents, tail, used, starts = split_region(region)
+        if not flush_all and sents and not tail.strip():
+            # 末尾の文が region 終端ちょうどで終わっている → 直後に装飾絵文字(❤等)が
+            # 次ポーリングで続く可能性がある。最後の1文だけ保留し、次回再評価させる。
+            used = starts[-1]
+            sents = sents[:-1]
         for s in sents:
             self.on_sentence(s)
         if flush_all:

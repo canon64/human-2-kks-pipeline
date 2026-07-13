@@ -19,7 +19,11 @@ from .config import load_or_create_config, resolve_config_path, runtime_base_dir
 from .io_utf8 import force_stdio_utf8, with_utf8_env
 from .llm_providers import LlmRequestConfig, generate_llm_response, normalize_backend
 from .logging_utils import setup_logger
-from core.sd_prompt_bridge import extract_sd_prompt_block, send_a1111_txt2img
+from core.sd_prompt_bridge import (
+    extract_sd_prompt_block,
+    send_a1111_txt2img,
+    strip_sd_prompt_blocks_for_kks,
+)
 
 
 def _print_json(payload: dict[str, Any]) -> None:
@@ -112,6 +116,22 @@ def _parse_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _parse_sd_rewrite_rules(raw: str, logger=None) -> list[dict[str, Any]]:
+    """--sd-prompt-rewrite-rules-json の文字列を [{...}] のリストへ。失敗時は空。"""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        if logger is not None:
+            logger.warning("sd_prompt_rewrite_rules_json parse failed, skipping")
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [r for r in parsed if isinstance(r, dict)]
 
 
 def _normalize_face_send_mode(value: Any) -> str:
@@ -441,21 +461,26 @@ def _send_sequence_line_event(
     include_face: bool,
 ) -> tuple[str, str, str]:
     line_no = max(1, int(line_index))
+    safe_display_text = strip_sd_prompt_blocks_for_kks(
+        display_text,
+        begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+        end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+    )
     payload: dict[str, Any] = {
         "type": "speak_sequence" if line_no == 1 else "speak_sequence_append",
         "sessionId": session_id,
         "main": int(args.main),
         "interrupt": 1 if line_no == 1 else 0,
         "deleteAfterPlay": 0,
-        "responseText": display_text,
-        "lineTexts": [display_text],
+        "responseText": safe_display_text,
+        "lineTexts": [safe_display_text],
         "lineDurations": [_round3(duration)],
         "lineIndexOffset": line_no - 1,
         "items": [
             {
                 "index": line_no,
                 "audioPath": str(wav_path),
-                "subtitle": display_text,
+                "subtitle": safe_display_text,
                 "durationSeconds": _round3(duration),
                 "holdSeconds": _round3(max(0.1, duration + 0.2)),
             }
@@ -645,6 +670,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sd-prompt-hr-prompt", default="", help="A1111 hr_prompt.")
     parser.add_argument("--sd-prompt-hr-negative-prompt", default="", help="A1111 hr_negative_prompt.")
     parser.add_argument("--sd-prompt-extra-payload-json", default="", help="Extra A1111 txt2img payload JSON object merged last.")
+    parser.add_argument("--sd-prompt-rewrite-rules-json", default="", help="SD prompt rewrite rules JSON array ([{\"enabled\":true,\"mode\":\"replace|append\",\"from\":\"...\",\"to\":\"...\"}]). Applied to the AI SD prompt before append_prompt/txt2img.")
     parser.add_argument("--main", type=int, default=0, help="Main index for event payload.")
     parser.add_argument("--face", type=int, default=-1, help="Face id for event payload. -1 to keep default behavior.")
     parser.add_argument("--keep-current-face", action="store_true", help="Send keepCurrentFace flag with event.")
@@ -689,11 +715,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _sd_send_worker(prompt: str, args: argparse.Namespace, logger) -> None:
+def _sd_send_worker(prompt: str, args: argparse.Namespace, logger) -> dict[str, Any]:
     """SDプロンプト送信（別スレッド・喋りを止めない）。"""
     try:
         result = send_a1111_txt2img(
             prompt=prompt,
+            prompt_rewrite_rules=_parse_sd_rewrite_rules(getattr(args, "sd_prompt_rewrite_rules_json", ""), logger),
             host=args.sd_prompt_target_host,
             port=int(args.sd_prompt_target_port),
             endpoint=args.sd_prompt_endpoint,
@@ -718,7 +745,7 @@ def _sd_send_worker(prompt: str, args: argparse.Namespace, logger) -> None:
             restore_faces=bool(args.sd_prompt_restore_faces),
             tiling=bool(args.sd_prompt_tiling),
             save_images=bool(args.sd_prompt_save_images),
-            send_images=bool(args.sd_prompt_send_images),
+            send_images=True,
             enable_hr=bool(args.sd_prompt_enable_hr),
             hr_scale=float(args.sd_prompt_hr_scale),
             hr_upscaler=args.sd_prompt_hr_upscaler,
@@ -734,8 +761,10 @@ def _sd_send_worker(prompt: str, args: argparse.Namespace, logger) -> None:
             extra_payload_json=args.sd_prompt_extra_payload_json,
         )
         logger.info("sd_prompt_send(stream) ok=%d status=%d url=%s", int(result.ok), result.status, result.url)
+        return result.to_dict()
     except Exception as exc:
         logger.error("sd_prompt_send(stream) failed: %s", exc)
+        return {"ok": False, "status": 0, "url": "", "body": "", "error": str(exc)}
 
 
 def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> int:
@@ -801,6 +830,7 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
         "sd_prompt_detected": False,
         "sd_prompt": "",
         "sd_prompt_send_attempted": False,
+        "sd_prompt_send_result": {},
     }
     sd_threads: list[threading.Thread] = []
     sd_seen_prompts: set[str] = set()
@@ -837,23 +867,63 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
             return
 
         state["sd_prompt_send_attempted"] = True
-        th = threading.Thread(target=_sd_send_worker, args=(prompt, args, logger), daemon=True)
+
+        def _capture_sd_result() -> None:
+            result = _sd_send_worker(prompt, args, logger)
+            if isinstance(result, dict):
+                state["sd_prompt_send_result"] = result
+
+        th = threading.Thread(target=_capture_sd_result, daemon=True)
         th.start()
         sd_threads.append(th)
 
     def on_sentence(sentence: str) -> None:
+        sentence = strip_sd_prompt_blocks_for_kks(
+            sentence,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
+        if not sentence.strip():
+            logger.info("[stream] KKS sentence skipped because it only contained an SD prompt block")
+            return
         send_conv = _apply_conversion_rules(sentence, conversion_dict, display_only=False, random_pick_cache=random_pick_cache, logger=logger)
         disp_conv = _apply_conversion_rules(sentence, conversion_dict, display_only=True, random_pick_cache=random_pick_cache, logger=logger)
         if not send_conv.strip():
+            return
+        send_conv = strip_sd_prompt_blocks_for_kks(
+            send_conv,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
+        disp_conv = strip_sd_prompt_blocks_for_kks(
+            disp_conv,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
+        if not send_conv.strip():
+            logger.info("[stream] KKS sentence skipped after SD prompt block cleanup")
             return
         # 字幕翻訳: 非ストリーム経路（_split後の一括翻訳）と同じ _translate_text を、
         # 本番(stream)でも各行で使い、送信テキストから表示字幕を翻訳する（経路を統一）。
         if args.subtitle_translate_enabled and str(args.subtitle_translate_target or "").strip():
             disp_conv = _translate_text(send_conv, args.subtitle_translate_source, args.subtitle_translate_target, logger)
+            disp_conv = strip_sd_prompt_blocks_for_kks(
+                disp_conv,
+                begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+                end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+            )
         # 声の翻訳: 有効なら、ひかりが喋る文を翻訳してからSBV2へ渡す（字幕とは独立）。
         speak_text = send_conv
         if args.voice_translate_enabled and str(args.voice_translate_target or "").strip():
             speak_text = _translate_text(send_conv, args.voice_translate_source, args.voice_translate_target, logger)
+            speak_text = strip_sd_prompt_blocks_for_kks(
+                speak_text,
+                begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+                end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+            )
+            if not speak_text.strip():
+                logger.info("[stream] KKS voice line skipped after SD prompt block cleanup")
+                return
         state["idx"] += 1
         idx = int(state["idx"])
         out_path = parts_dir / f"line_{idx:03d}.wav"
@@ -961,7 +1031,7 @@ def _run_streaming(args: argparse.Namespace, config, logger, base_dir: Path) -> 
             "sd_prompt_length": len(str(state["sd_prompt"] or "")),
             "sd_prompt_send_enabled": bool(args.sd_prompt_send_enabled),
             "sd_prompt_send_attempted": bool(state["sd_prompt_send_attempted"]),
-            "sd_prompt_send_result": {},
+            "sd_prompt_send_result": dict(state.get("sd_prompt_send_result", {}) or {}),
             "stream": True,
         }
     )
@@ -1056,6 +1126,7 @@ def main() -> int:
             if args.sd_prompt_send_enabled and not args.sd_skip_send:
                 result = send_a1111_txt2img(
                     prompt=sd_prompt,
+                    prompt_rewrite_rules=_parse_sd_rewrite_rules(getattr(args, "sd_prompt_rewrite_rules_json", ""), logger),
                     host=args.sd_prompt_target_host,
                     port=int(args.sd_prompt_target_port),
                     endpoint=args.sd_prompt_endpoint,
@@ -1080,7 +1151,7 @@ def main() -> int:
                     restore_faces=bool(args.sd_prompt_restore_faces),
                     tiling=bool(args.sd_prompt_tiling),
                     save_images=bool(args.sd_prompt_save_images),
-                    send_images=bool(args.sd_prompt_send_images),
+                    send_images=True,
                     enable_hr=bool(args.sd_prompt_enable_hr),
                     hr_scale=float(args.sd_prompt_hr_scale),
                     hr_upscaler=args.sd_prompt_hr_upscaler,
@@ -1103,7 +1174,11 @@ def main() -> int:
                     result.url,
                     result.error,
                 )
-        response_raw_for_tts = response_without_sd
+        response_raw_for_tts = strip_sd_prompt_blocks_for_kks(
+            response_without_sd,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
         response, response_raw_len, response_capped_len, response_truncated = _limit_response_text(
             response_raw_for_tts,
             max_chars=args.max_response_chars,
@@ -1133,6 +1208,16 @@ def main() -> int:
             display_only=True,
             random_pick_cache=random_pick_cache,
             logger=logger,
+        )
+        response = strip_sd_prompt_blocks_for_kks(
+            response,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
+        )
+        response_display = strip_sd_prompt_blocks_for_kks(
+            response_display,
+            begin_tag=getattr(args, "sd_prompt_begin_tag", "[SD_PROMPT_BEGIN]"),
+            end_tag=getattr(args, "sd_prompt_end_tag", "[SD_PROMPT_END]"),
         )
 
         max_line_chars = max(0, int(args.max_line_chars or 0))

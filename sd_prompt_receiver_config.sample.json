@@ -3,7 +3,7 @@
   "listen_port": 18768,
   "endpoint": "/sd-prompt",
   "token": "",
-  "sd_webui_url": "http://127.0.0.1:7860",
+  "sd_webui_url": "http://192.168.11.6:7860",
   "sd_api_path": "/sdapi/v1/txt2img",
   "sd_timeout_sec": 180.0,
   "save_response_images": true,

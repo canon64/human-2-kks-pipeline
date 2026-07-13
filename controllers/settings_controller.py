@@ -210,6 +210,26 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
                 }
             )
 
+    sd_prompt_rewrite_rules = []
+    sd_rewrite_table = getattr(window, "sd_rewrite_table", None)
+    if sd_rewrite_table is not None:
+        for row in range(sd_rewrite_table.rowCount()):
+            enabled_item = sd_rewrite_table.item(row, 0)
+            from_item = sd_rewrite_table.item(row, 2)
+            to_item = sd_rewrite_table.item(row, 3)
+            mode_widget = sd_rewrite_table.cellWidget(row, 1)
+            enabled = bool(enabled_item and enabled_item.checkState() == Qt.CheckState.Checked)
+            from_str = (from_item.text() if from_item else "").strip()
+            to_str = (to_item.text() if to_item else "").strip()
+            mode = "replace"
+            if mode_widget is not None:
+                data_mode = mode_widget.currentData()
+                mode = str(data_mode) if data_mode else "replace"
+            if from_str:
+                sd_prompt_rewrite_rules.append(
+                    {"enabled": enabled, "mode": mode, "from": from_str, "to": to_str}
+                )
+
     return AppConfig(
         wav_dir=Path(window.wav_dir_edit.text().strip()).expanduser().resolve(),
         threshold_dbfs=float(window.threshold_spin.value()),
@@ -235,6 +255,9 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         faster_compute=window.faster_compute_combo.currentText().strip(),
         faster_language=window.faster_lang_edit.text().strip() or "ja",
         faster_beam=max(1, int(window.faster_beam_spin.value())),
+        fw_backend=str(window.fw_backend_combo.currentData() or "local"),
+        rtfw_host=window.rtfw_host_edit.text().strip() or "192.168.11.6",
+        rtfw_port=int(window.rtfw_port_spin.value()),
         pipeline_python=Path(window.pipeline_python_edit.text().strip()).expanduser().resolve(),
         llm_backend=_normalize_llm_backend(
             window.llm_backend_combo.currentData()
@@ -295,6 +318,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         sd_prompt_token=window.sd_prompt_token_edit.text().strip(),
         sd_prompt_timeout_sec=float(window.sd_prompt_timeout_spin.value()),
         sd_prompt_generate_forever=bool(window.sd_prompt_forever_chk.isChecked()),
+        sd_preview_auto_show=bool(window.sd_preview_auto_show_chk.isChecked()),
         sd_control_port=int(window.sd_control_port_spin.value()),
         sd_slideshow_interval_sec=int(window.sd_slideshow_interval_spin.value()),
         sd_blankmap_sync_enabled=bool(window.sd_blankmap_sync_chk.isChecked()),
@@ -364,6 +388,7 @@ def build_config(window, *, config_file: Path, default_source_mode: str) -> AppC
         filter_phrases=filter_phrases,
         transcribe_conversion_dict=transcribe_conversion_dict,
         conversion_dict=conversion_dict,
+        sd_prompt_rewrite_rules=sd_prompt_rewrite_rules,
     )
 
 
@@ -405,6 +430,9 @@ def save_config(
         "faster_compute": cfg.faster_compute,
         "faster_language": cfg.faster_language,
         "faster_beam": cfg.faster_beam,
+        "fw_backend": cfg.fw_backend,
+        "rtfw_host": cfg.rtfw_host,
+        "rtfw_port": cfg.rtfw_port,
         "pipeline_python": str(cfg.pipeline_python),
         "llm_backend": cfg.llm_backend,
         "llm_base_url": cfg.llm_base_url,
@@ -457,6 +485,7 @@ def save_config(
         "sd_prompt_token": cfg.sd_prompt_token,
         "sd_prompt_timeout_sec": cfg.sd_prompt_timeout_sec,
         "sd_prompt_generate_forever": cfg.sd_prompt_generate_forever,
+        "sd_preview_auto_show": cfg.sd_preview_auto_show,
         "sd_control_port": cfg.sd_control_port,
         "sd_slideshow_interval_sec": cfg.sd_slideshow_interval_sec,
         "sd_blankmap_sync_enabled": cfg.sd_blankmap_sync_enabled,
@@ -517,12 +546,16 @@ def save_config(
         "filter_phrases": cfg.filter_phrases,
         "transcribe_conversion_dict": cfg.transcribe_conversion_dict,
         "conversion_dict": cfg.conversion_dict,
+        "sd_prompt_rewrite_rules": cfg.sd_prompt_rewrite_rules,
         "manual_history": window._manual_history[:50],
         "model_presets": window._model_presets,
         "chrome_debug_port": window.chrome_port_spin.value(),
         "chrome_headless": window.chrome_headless_chk.isChecked(),
         "chrome_profile": window.chrome_profile_combo.currentData() or "",
+        "astral_grok_url": window.astral_grok_url_edit.text().strip(),
     }
+    data.pop("rtfw_source", None)
+    data.pop("rtfw_device_id", None)
     config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     _sync_grok_bridge_debug_port(config_file, window.chrome_port_spin.value())
     return cfg
@@ -576,6 +609,10 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.faster_compute_combo.setCurrentText(s("faster_compute", window.faster_compute_combo.currentText()))
         window.faster_lang_edit.setText(s("faster_language", window.faster_lang_edit.text()))
         window.faster_beam_spin.setValue(i("faster_beam", window.faster_beam_spin.value()))
+        backend_index = window.fw_backend_combo.findData(s("fw_backend", "local"))
+        window.fw_backend_combo.setCurrentIndex(max(0, backend_index))
+        window.rtfw_host_edit.setText(s("rtfw_host", "192.168.11.6"))
+        window.rtfw_port_spin.setValue(i("rtfw_port", 8766))
         window.pipeline_python_edit.setText(s("pipeline_python", window.pipeline_python_edit.text()))
         llm_backend = _normalize_llm_backend(data.get("llm_backend", "grok_browser"), "grok_browser")
         llm_backend_index = max(0, window.llm_backend_combo.findData(llm_backend))
@@ -645,6 +682,7 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.sd_prompt_token_edit.setText(s("sd_prompt_token", ""))
         window.sd_prompt_timeout_spin.setValue(i("sd_prompt_timeout_sec", window.sd_prompt_timeout_spin.value()))
         window.sd_prompt_forever_chk.setChecked(b("sd_prompt_generate_forever", False))
+        window.sd_preview_auto_show_chk.setChecked(b("sd_preview_auto_show", False))
         window.sd_control_port_spin.setValue(i("sd_control_port", window.sd_control_port_spin.value()))
         window.sd_slideshow_interval_spin.setValue(i("sd_slideshow_interval_sec", window.sd_slideshow_interval_spin.value()))
         window.sd_blankmap_sync_chk.setChecked(b("sd_blankmap_sync_enabled", True))
@@ -705,6 +743,8 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
         window.video_metadata_edit.setText(s("video_metadata_path", window.video_metadata_edit.text()))
         window.chrome_port_spin.setValue(i("chrome_debug_port", 9222))
         window.chrome_headless_chk.setChecked(b("chrome_headless", False))
+        if hasattr(window, "astral_grok_url_edit"):
+            window.astral_grok_url_edit.setText(s("astral_grok_url", window.astral_grok_url_edit.text()))
         saved_profile = s("chrome_profile", "")
         if saved_profile:
             for idx in range(window.chrome_profile_combo.count()):
@@ -761,6 +801,9 @@ def load_config(window, *, config_file: Path, default_source_mode: str) -> None:
                 enabled,
                 start_edit=False,
             )
+        sd_rules = data.get("sd_prompt_rewrite_rules", [])
+        if hasattr(window, "sd_rewrite_table"):
+            window._sd_rewrite_set_rows(sd_rules if isinstance(sd_rules, list) else [])
         window._model_presets = [p for p in data.get("model_presets", []) if isinstance(p, dict) and p.get("name")]
         window._refresh_preset_ui()
         history = data.get("manual_history", [])

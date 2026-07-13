@@ -165,6 +165,35 @@ def _is_send_button_ready(driver, selectors: Sequence[str]) -> bool:
 
 def _guess_send_block_reason(driver) -> str:
     try:
+        input_state = driver.execute_script(
+            """
+            const selectors = [
+                'div[role="textbox"][contenteditable="true"]',
+                'div.ProseMirror[contenteditable="true"]',
+                'textarea',
+                '[contenteditable="true"]'
+            ];
+            for (const selector of selectors) {
+                for (const el of document.querySelectorAll(selector)) {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const visible = rect.width > 0 && rect.height > 0 &&
+                        style.display !== 'none' && style.visibility !== 'hidden';
+                    const disabled = el.disabled === true ||
+                        el.getAttribute('aria-disabled') === 'true' ||
+                        el.getAttribute('aria-readonly') === 'true' ||
+                        el.readOnly === true;
+                    if (visible && !disabled) return 'editable';
+                }
+            }
+            return 'not_editable';
+            """
+        )
+        if input_state == "editable":
+            return "Send button is disabled after text input, but Grok input appears editable."
+    except Exception:
+        pass
+    try:
         body_text = driver.execute_script("return (document.body && document.body.innerText) ? document.body.innerText : '';")
     except Exception:
         body_text = ""

@@ -87,6 +87,17 @@
 - `run_transcribe_one_wav.py`
 - `run_grok_tts_event.py`
 
+### FasterWhisper の実行先
+
+設定画面の「FW実行先」で次のどちらかを明示的に選びます。自動切替はしません。
+
+- `ローカルFW`: 既存録音が保存したWAVを、このPCのFasterWhisperへ渡します。
+- `サブPC RTFW LAN`: 同じWAVをサブPCへ送り、確定結果だけを既存パイプラインへ渡します。このPCではFasterWhisperを起動しません。
+
+入力デバイスは録音設定タブの既存欄だけを使います。VR PTT、音声ゲート、FWテストが作ったWAVはすべて同じbackend dispatchを通ります。RTFW欄の「接続・認証確認」は経路確認だけで、独自録音は開始しません。
+
+共有トークンは `J:\tools\api-scripts\runtime\.env` の `RTFW_LAN_TOKEN` を読みます。設定ファイルやログには保存しません。経路診断は `J:\tools\api-scripts\runtime\data\rtfw_lan_client\route.jsonl`（送信側）と、サブPCの `Z:\tools\rtfw_remote_worker\logs\route.jsonl`（受信・推論側）を確認してください。
+
 ---
 
 ## 5. GUIの使い方（重要）

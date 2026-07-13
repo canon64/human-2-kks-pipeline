@@ -19,6 +19,9 @@ def deferred_live_fields(cfg_prev: AppConfig, cfg_now: AppConfig) -> list[str]:
         fields.append("faster_language")
     if cfg_prev.faster_beam != cfg_now.faster_beam:
         fields.append("faster_beam")
+    for name in ("fw_backend", "rtfw_host", "rtfw_port"):
+        if getattr(cfg_prev, name) != getattr(cfg_now, name):
+            fields.append(name)
     if cfg_prev.transcribe_server_port != cfg_now.transcribe_server_port:
         fields.append("transcribe_server_port")
     if cfg_prev.sbv2_root != cfg_now.sbv2_root:

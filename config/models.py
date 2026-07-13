@@ -33,6 +33,9 @@ class AppConfig:
     faster_compute: str
     faster_language: str
     faster_beam: int
+    fw_backend: str
+    rtfw_host: str
+    rtfw_port: int
     pipeline_python: Path
     llm_backend: str
     llm_base_url: str
@@ -85,6 +88,7 @@ class AppConfig:
     sd_prompt_token: str = ""
     sd_prompt_timeout_sec: float = 40.0
     sd_prompt_generate_forever: bool = False
+    sd_preview_auto_show: bool = False
     sd_control_port: int = 18768
     sd_slideshow_interval_sec: int = 20
     sd_blankmap_sync_enabled: bool = True
@@ -145,4 +149,5 @@ class AppConfig:
     filter_phrases: list[dict] = field(default_factory=list)
     transcribe_conversion_dict: list[dict] = field(default_factory=list)
     conversion_dict: list[dict] = field(default_factory=list)
+    sd_prompt_rewrite_rules: list[dict] = field(default_factory=list)
 

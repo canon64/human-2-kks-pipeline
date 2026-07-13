@@ -22,11 +22,15 @@ import sounddevice as sd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+CODE_PARTS = Path(r"J:\tools\api-scripts\repo\code_parts\python")
+if str(CODE_PARTS) not in sys.path:
+    sys.path.insert(0, str(CODE_PARTS))
 
 from voice_gate_recorder import RecorderConfig, get_input_devices
+from qt_dropdown.qt_dropdown import create_dropdown
 
 from PyQt6.QtCore import QObject, QEvent, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemDelegate,
     QStyledItemDelegate,
@@ -77,13 +81,15 @@ from controllers.settings_controller import (
     load_config as _load_config_impl,
     save_config as _save_config_impl,
 )
+from controllers.rtfw_lan_controller import RtfwLanController
 from core.io_utils import (
     last_json_line as _last_json_line,
     save_text as _save_text,
     wav_duration_sec as _wav_duration_sec,
     with_utf8_env as _with_utf8_env,
 )
-from core.sd_prompt_bridge import send_a1111_txt2img
+from core.sd_prompt_bridge import extract_sd_result_images, send_a1111_txt2img
+from services.rtfw_lan_service import dispatch_transcription
 from workers.pipeline_worker import PipelineWorker
 from workers.recorder_worker import RecorderWorker
 
@@ -188,6 +194,87 @@ class _CheckStateSortItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class _SdPreviewWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle("SDプレビュー")
+        self.setMinimumSize(360, 360)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        self._pixmap = QPixmap()
+        self._auto_sized_once = False
+        self._internal_resize = False
+
+        self._image_label = QLabel("SD画像待機中")
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setMinimumSize(320, 320)
+
+        self._status_label = QLabel("待機")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._status_label.setWordWrap(True)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self._image_label, 1)
+        layout.addWidget(self._status_label)
+        self.setLayout(layout)
+
+    def show_status(self, text: str) -> None:
+        self._status_label.setText(str(text or ""))
+        if self._pixmap.isNull():
+            self._image_label.setText("SD画像待機中")
+
+    def update_image(self, image_bytes: bytes, *, source: str = "", status: int = 0, url: str = "") -> bool:
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(bytes(image_bytes or b"")):
+            self.show_status("画像の読み込みに失敗")
+            return False
+        self._pixmap = pixmap
+        source_text = str(source or "SD")
+        self.setWindowTitle(f"SDプレビュー - {source_text}")
+        status_text = f"{source_text} / {pixmap.width()}x{pixmap.height()}"
+        if status:
+            status_text += f" / HTTP {status}"
+        if url:
+            status_text += f" / {url}"
+        self._status_label.setText(status_text)
+        if not self._auto_sized_once:
+            self._resize_to_pixmap()
+            self._auto_sized_once = True
+        self._refresh_scaled_pixmap()
+        return True
+
+    def _resize_to_pixmap(self) -> None:
+        if self._pixmap.isNull():
+            return
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        margin_w = 80
+        margin_h = 140
+        max_w = max(360, available.width() - margin_w) if available is not None else 1280
+        max_h = max(360, available.height() - margin_h) if available is not None else 900
+        target_w = min(max_w, max(360, self._pixmap.width()))
+        target_h = min(max_h, max(360, self._pixmap.height() + 42))
+        self._internal_resize = True
+        try:
+            self.resize(target_w, target_h)
+        finally:
+            self._internal_resize = False
+
+    def _refresh_scaled_pixmap(self) -> None:
+        if self._pixmap.isNull():
+            return
+        target = self._image_label.size()
+        scaled = self._pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._image_label.setPixmap(scaled)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_scaled_pixmap()
+
+
 class _FilterTypeDelegate(QStyledItemDelegate):
     _choices = [
         ("部分一致", "partial"),
@@ -289,6 +376,7 @@ class MainWindow(QMainWindow):
         self._sbv2_test_last_run_dir: Optional[Path] = None
         self._sbv2_test_no_send = False
         self._sd_prompt_test_worker: Optional[_TaskWorker] = None
+        self._sd_preview_window: Optional[_SdPreviewWindow] = None
 
         self._manual_history: list[str] = []
         self._model_presets: list[dict] = []
@@ -310,6 +398,7 @@ class MainWindow(QMainWindow):
         self._load_config()
         self._install_autosave_hooks()
         self._install_clipboard_support()
+        self._rtfw_controller = RtfwLanController(self, log=self._append_log)
 
     # ---- UI構築 ----
 
@@ -552,6 +641,32 @@ class MainWindow(QMainWindow):
         whisper_row.addWidget(QLabel("beam")); whisper_row.addWidget(self.faster_beam_spin)
         w = QWidget(); w.setLayout(whisper_row)
         form.addRow("Whisper", w)
+
+        self.fw_backend_combo = create_dropdown(items=[
+            ("ローカルFW", "local"),
+            ("サブPC RTFW LAN", "rtfw_lan"),
+        ], value="local")
+        backend_w = QWidget(); backend_row = QHBoxLayout(backend_w); backend_row.setContentsMargins(0, 0, 0, 0)
+        backend_row.addWidget(self.fw_backend_combo); backend_row.addStretch(1)
+        form.addRow("FW実行先", backend_w)
+
+        self.rtfw_host_edit = QLineEdit("192.168.11.6")
+        self.rtfw_port_spin = _NoWheelPortSpinBox(); self.rtfw_port_spin.setRange(1, 65535); self.rtfw_port_spin.setValue(8766)
+        lan_target = QWidget(); lan_target_row = QHBoxLayout(lan_target); lan_target_row.setContentsMargins(0, 0, 0, 0)
+        lan_target_row.addWidget(QLabel("host")); lan_target_row.addWidget(self.rtfw_host_edit)
+        lan_target_row.addWidget(QLabel("port")); lan_target_row.addWidget(self.rtfw_port_spin)
+        lan_target_row.addStretch(1)
+        form.addRow("RTFW LAN", lan_target)
+
+        self.rtfw_connect_btn = QPushButton("接続・認証確認")
+        self.rtfw_status_label = QLabel("待機")
+        lan_controls = QWidget(); lan_controls_row = QHBoxLayout(lan_controls); lan_controls_row.setContentsMargins(0, 0, 0, 0)
+        for item in (self.rtfw_connect_btn, self.rtfw_status_label):
+            lan_controls_row.addWidget(item)
+        form.addRow("RTFW操作", lan_controls)
+        self.rtfw_route_label = QLabel("既存WAV → 接続 → 認証 → 音声送信 → ACK → flush → 確定結果")
+        self.rtfw_route_label.setWordWrap(True)
+        form.addRow("RTFW経路", self.rtfw_route_label)
 
         # ── あなたの入力（あなたが喋る側） ──────────────────────────
         input_group = QVBoxLayout()
@@ -909,6 +1024,36 @@ class MainWindow(QMainWindow):
         self.sd_prompt_append_prompt_edit.setPlaceholderText("抽出したSDプロンプト末尾に追加するタグ")
         form.addRow("追加プロンプト", self.sd_prompt_append_prompt_edit)
 
+        # AIが出したSDプロンプトに対する書き換えルール（上から順に適用）
+        self.sd_rewrite_table = QTableWidget(0, 4)
+        self.sd_rewrite_table.setHorizontalHeaderLabels(["有効", "種類", "対象ワード", "置換/追加する文"])
+        sd_rw_header = self.sd_rewrite_table.horizontalHeader()
+        sd_rw_header.setStretchLastSection(True)
+        sd_rw_header.setSectionResizeMode(0, sd_rw_header.ResizeMode.Fixed)
+        sd_rw_header.setSectionResizeMode(1, sd_rw_header.ResizeMode.Fixed)
+        sd_rw_header.setSectionResizeMode(2, sd_rw_header.ResizeMode.Interactive)
+        sd_rw_header.setSectionResizeMode(3, sd_rw_header.ResizeMode.Stretch)
+        self.sd_rewrite_table.setColumnWidth(0, 48)
+        self.sd_rewrite_table.setColumnWidth(1, 80)
+        self.sd_rewrite_table.setColumnWidth(2, 160)
+        self.sd_rewrite_table.setMaximumHeight(160)
+        self.sd_rewrite_table.verticalHeader().setVisible(False)
+        sd_rw_btn_row = QHBoxLayout()
+        sd_rw_add_btn = QPushButton("ルール追加")
+        sd_rw_add_btn.clicked.connect(lambda: self._sd_rewrite_add_row())
+        sd_rw_del_btn = QPushButton("選択行を削除")
+        sd_rw_del_btn.clicked.connect(self._sd_rewrite_remove_selected)
+        sd_rw_btn_row.addWidget(sd_rw_add_btn)
+        sd_rw_btn_row.addWidget(sd_rw_del_btn)
+        sd_rw_btn_row.addStretch(1)
+        sd_rw_box = QVBoxLayout()
+        sd_rw_box.setContentsMargins(0, 0, 0, 0)
+        sd_rw_box.addWidget(self.sd_rewrite_table)
+        sd_rw_box.addLayout(sd_rw_btn_row)
+        sd_rw_widget = QWidget()
+        sd_rw_widget.setLayout(sd_rw_box)
+        form.addRow("プロンプト書き換え", sd_rw_widget)
+
         self.sd_prompt_negative_prompt_edit = QPlainTextEdit()
         self.sd_prompt_negative_prompt_edit.setMaximumHeight(72)
         self.sd_prompt_negative_prompt_edit.setPlaceholderText("negative prompt")
@@ -1032,8 +1177,17 @@ class MainWindow(QMainWindow):
         test_row = QHBoxLayout()
         self.sd_prompt_test_btn = QPushButton("SD送信テスト")
         self.sd_prompt_test_btn.clicked.connect(self._run_sd_prompt_send_test)
+        self.sd_preview_btn = QPushButton("プレビュー")
+        self.sd_preview_btn.clicked.connect(lambda: self._show_sd_preview_window(focus=True))
+        self.sd_preview_auto_show_chk = QCheckBox("生成後にプレビューを開く")
+        self.sd_preview_auto_show_chk.setChecked(False)
+        self.sd_prompt_test_rewrite_chk = QCheckBox("変換ルール適用")
+        self.sd_prompt_test_rewrite_chk.setChecked(True)
         self.sd_prompt_test_status_label = QLabel("待機")
         test_row.addWidget(self.sd_prompt_test_btn)
+        test_row.addWidget(self.sd_preview_btn)
+        test_row.addWidget(self.sd_preview_auto_show_chk)
+        test_row.addWidget(self.sd_prompt_test_rewrite_chk)
         test_row.addWidget(self.sd_prompt_test_status_label, 1)
         test = QWidget(); test.setLayout(test_row)
         form.addRow("テスト", test)
@@ -1140,18 +1294,106 @@ class MainWindow(QMainWindow):
         prompt_text = str(prompt or "").strip()
         if not prompt_text or not self.sd_prompt_forever_chk.isChecked():
             return False
+        rewrite_enabled = bool(getattr(self, "sd_prompt_test_rewrite_chk", None) is None or self.sd_prompt_test_rewrite_chk.isChecked())
         if self._pipeline_worker is None:
             self._append_log(f"[sd-forever] {source}: パイプライン未起動")
             return False
         try:
             self._pipeline_worker._cfg.sd_prompt_generate_forever = True
-            self._pipeline_worker._set_current_sd_prompt(prompt_text)
+            self._pipeline_worker._set_current_sd_prompt(prompt_text, rewrite_enabled=rewrite_enabled)
             self._pipeline_worker._start_sd_forever_loop()
-            self._append_log(f"[sd-forever] {source}: テストpromptを永続生成へ反映 len={len(prompt_text)}")
+            self._append_log(
+                f"[sd-forever] {source}: テストpromptを永続生成へ反映 "
+                f"len={len(prompt_text)} rewrite={int(rewrite_enabled)}"
+            )
             return True
         except Exception as exc:
             self._append_log(f"[sd-forever] {source}: テストprompt反映失敗: {exc}")
             return False
+
+    def _show_sd_preview_window(self, focus: bool = True) -> _SdPreviewWindow:
+        if self._sd_preview_window is None:
+            self._sd_preview_window = _SdPreviewWindow()
+        self._sd_preview_window.setWindowFlag(Qt.WindowType.Window, True)
+        self._sd_preview_window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        if focus:
+            self._sd_preview_window.show()
+            self._sd_preview_window.showNormal()
+            self._sd_preview_window.raise_()
+            self._sd_preview_window.activateWindow()
+        elif not self._sd_preview_window.isVisible():
+            self._sd_preview_window.show()
+        return self._sd_preview_window
+
+    def _update_sd_preview_from_payload(self, payload: dict) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        image_bytes = data.get("bytes")
+        if not isinstance(image_bytes, (bytes, bytearray)):
+            return
+        saved_path = self._save_sd_preview_image(bytes(image_bytes), str(data.get("source", "") or "sd"))
+        auto_show = bool(self.sd_preview_auto_show_chk.isChecked())
+        window = self._show_sd_preview_window(focus=True) if auto_show else self._sd_preview_window
+        if window is None:
+            self._append_log(
+                "[sd-preview] saved "
+                f"source={str(data.get('source', '') or 'SD')} "
+                f"bytes={len(image_bytes)} "
+                f"auto_show=0 "
+                f"saved={saved_path if saved_path is not None else '(保存失敗)'}"
+            )
+            return
+        ok = window.update_image(
+            bytes(image_bytes),
+            source=str(data.get("source", "") or "SD"),
+            status=int(data.get("status", 0) or 0),
+            url=str(data.get("url", "") or ""),
+        )
+        if ok:
+            self._append_log(
+                "[sd-preview] update "
+                f"source={str(data.get('source', '') or 'SD')} "
+                f"bytes={len(image_bytes)} "
+                f"auto_show={int(auto_show)} "
+                f"saved={saved_path if saved_path is not None else '(保存失敗)'}"
+            )
+
+    def _save_sd_preview_image(self, image_bytes: bytes, source: str) -> Optional[Path]:
+        try:
+            try:
+                base_dir = Path(self.output_dir_edit.text().strip()).expanduser()
+            except Exception:
+                base_dir = PROJECT_ROOT / "outputs"
+            if not str(base_dir):
+                base_dir = PROJECT_ROOT / "outputs"
+            out_dir = base_dir.resolve() / "sd_preview" / datetime.now().strftime("%Y%m%d")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            safe_source = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(source or "sd")).strip("._") or "sd"
+            stamp = datetime.now().strftime("%H%M%S_%f")[:-3]
+            path = out_dir / f"{stamp}_{safe_source}.png"
+            path.write_bytes(image_bytes)
+            return path
+        except Exception as exc:
+            self._append_log(f"[sd-preview] save failed: {exc}")
+            return None
+
+    def _update_sd_preview_from_result(self, result: dict, source: str) -> int:
+        count = 0
+        for index, image_bytes in enumerate(extract_sd_result_images(result), start=1):
+            self._update_sd_preview_from_payload(
+                {
+                    "source": source,
+                    "index": index,
+                    "bytes": image_bytes,
+                    "status": int(result.get("status", 0) or 0),
+                    "url": str(result.get("url", "") or ""),
+                }
+            )
+            count += 1
+        if count <= 0:
+            window = self._sd_preview_window
+            if window is not None and window.isVisible():
+                window.show_status(f"{source}: 画像なし")
+        return count
 
     def _run_sd_prompt_send_test(self) -> None:
         if self._sd_prompt_test_worker is not None and self._sd_prompt_test_worker.isRunning():
@@ -1175,12 +1417,15 @@ class MainWindow(QMainWindow):
             return
 
         self.sd_prompt_test_status_label.setText("送信中...")
+        rewrite_enabled = bool(self.sd_prompt_test_rewrite_chk.isChecked())
         self._append_log(
-            f"[sd-prompt-test] send target={cfg.sd_prompt_target_host}:{cfg.sd_prompt_target_port}{cfg.sd_prompt_endpoint} len={len(prompt)}"
+            f"[sd-prompt-test] send target={cfg.sd_prompt_target_host}:{cfg.sd_prompt_target_port}{cfg.sd_prompt_endpoint} "
+            f"len={len(prompt)} rewrite={int(rewrite_enabled)}"
         )
         self._sd_prompt_test_worker = _TaskWorker(
             lambda: send_a1111_txt2img(
                 prompt=prompt,
+                prompt_rewrite_rules=list(getattr(cfg, "sd_prompt_rewrite_rules", []) or []) if rewrite_enabled else [],
                 host=cfg.sd_prompt_target_host,
                 port=cfg.sd_prompt_target_port,
                 endpoint=cfg.sd_prompt_endpoint,
@@ -1205,7 +1450,7 @@ class MainWindow(QMainWindow):
                 restore_faces=cfg.sd_prompt_restore_faces,
                 tiling=cfg.sd_prompt_tiling,
                 save_images=cfg.sd_prompt_save_images,
-                send_images=cfg.sd_prompt_send_images,
+                send_images=True,
                 enable_hr=cfg.sd_prompt_enable_hr,
                 hr_scale=cfg.sd_prompt_hr_scale,
                 hr_upscaler=cfg.sd_prompt_hr_upscaler,
@@ -1234,6 +1479,9 @@ class MainWindow(QMainWindow):
         error = str(data.get("error", "") or "")
         self.sd_prompt_test_status_label.setText("送信成功" if ok else "送信失敗")
         self._append_log(f"[sd-prompt-test] result ok={int(ok)} status={status} url={url} error={error[:160]}")
+        image_count = self._update_sd_preview_from_result(data, "sd-prompt-test")
+        if ok:
+            self._append_log(f"[sd-prompt-test] preview_images={image_count}")
 
     def _on_sd_prompt_send_test_error(self, err: str) -> None:
         self._sd_prompt_test_worker = None
@@ -1451,7 +1699,12 @@ class MainWindow(QMainWindow):
             return value, str(exc)
 
     def _build_fw_test_texts(self, raw_text: str, cfg: AppConfig) -> tuple[str, str, str]:
-        send_text = self._apply_text_conversion_rules(raw_text, cfg.transcribe_conversion_dict, mode="send").strip()
+        send_text = self._apply_text_conversion_rules(
+            raw_text,
+            cfg.transcribe_conversion_dict,
+            mode="send",
+        ).strip()
+
         translate_error = ""
         if cfg.translate_enabled:
             send_text, translate_error = self._translate_text_value(
@@ -1461,15 +1714,17 @@ class MainWindow(QMainWindow):
             )
             send_text = send_text.strip()
 
-        if cfg.translate_enabled and cfg.translate_input_subtitle_original:
-            display_source = raw_text
-        else:
+        if cfg.translate_enabled and not cfg.translate_input_subtitle_original:
             display_source = send_text
+        else:
+            display_source = raw_text
+
         display_text = self._apply_text_conversion_rules(
             display_source,
             cfg.transcribe_conversion_dict,
             mode="display",
         ).strip()
+
         return send_text, display_text, translate_error
 
     @staticmethod
@@ -1709,28 +1964,40 @@ class MainWindow(QMainWindow):
 
     def _run_fw_test_transcribe(self, wav_path: Path) -> dict:
         cfg = self._build_config()
-        script = PROJECT_ROOT / "run_transcribe_one_wav.py"
-        if not script.exists():
-            raise FileNotFoundError(f"script not found: {script}")
-        cmd = [
-            str(cfg.faster_python), str(script),
-            "--audio", str(wav_path),
-            "--model", cfg.faster_model,
-            "--device", cfg.faster_device,
-            "--compute-type", cfg.faster_compute,
-            "--language", cfg.faster_language,
-            "--beam-size", str(cfg.faster_beam),
-        ]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=420,
-            env=_with_utf8_env(),
+        def local_transcriber(path: Path) -> dict:
+            script = PROJECT_ROOT / "run_transcribe_one_wav.py"
+            if not script.exists():
+                raise FileNotFoundError(f"script not found: {script}")
+            cmd = [
+                str(cfg.faster_python), str(script),
+                "--audio", str(path),
+                "--model", cfg.faster_model,
+                "--device", cfg.faster_device,
+                "--compute-type", cfg.faster_compute,
+                "--language", cfg.faster_language,
+                "--beam-size", str(cfg.faster_beam),
+            ]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=420,
+                env=_with_utf8_env(),
+            )
+            result = _last_json_line(proc.stdout or "")
+            result["returncode"] = proc.returncode
+            if proc.returncode != 0 and result.get("ok", False):
+                result["ok"] = False
+                result["error"] = (proc.stderr or proc.stdout or "").strip()
+            return result
+
+        payload = dispatch_transcription(
+            cfg,
+            wav_path,
+            local_transcriber=local_transcriber,
         )
-        payload = _last_json_line(proc.stdout or "")
         raw_text = str(payload.get("text", "")).strip()
         text_send, text_display, translate_error = self._build_fw_test_texts(raw_text, cfg)
         payload["text_original"] = raw_text
@@ -1738,10 +2005,6 @@ class MainWindow(QMainWindow):
         payload["text_display"] = text_display
         payload["translate_error"] = translate_error
         payload["audio_path"] = str(wav_path)
-        payload["returncode"] = proc.returncode
-        if proc.returncode != 0 and payload.get("ok", False):
-            payload["ok"] = False
-            payload["error"] = (proc.stderr or proc.stdout or "").strip()
         return payload
 
     def _on_fw_test_transcribe_done(self, payload: object) -> None:
@@ -2135,6 +2398,7 @@ class MainWindow(QMainWindow):
                     f"url={str(sd_result.get('url', '') or '')} "
                     f"error={str(sd_result.get('error', '') or '')[:120]}"
                 )
+                self._update_sd_preview_from_result(sd_result, "sbv2-test")
         merged_wav_raw = str(data.get("merged_wav", "") or "").strip()
         merged_wav = Path(merged_wav_raw).resolve() if merged_wav_raw else None
         line_wav_values = data.get("line_wavs", [])
@@ -2247,6 +2511,53 @@ class MainWindow(QMainWindow):
         lower = (err or "").lower()
         if ("10054" in err) or ("10061" in err) or ("connection reset" in lower) or ("connection refused" in lower):
             self._log_sbv2_health_snapshot("sbv2_test_error")
+
+    def _sd_rewrite_add_row(
+        self,
+        mode: str = "replace",
+        from_text: str = "",
+        to_text: str = "",
+        enabled: bool = True,
+    ) -> None:
+        table = self.sd_rewrite_table
+        row = table.rowCount()
+        table.insertRow(row)
+        enabled_item = QTableWidgetItem()
+        enabled_item.setFlags(
+            (enabled_item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable
+        )
+        enabled_item.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+        table.setItem(row, 0, enabled_item)
+        mode_combo = _NoWheelComboBox()
+        mode_combo.addItem("置換", "replace")
+        mode_combo.addItem("追加", "append")
+        idx = mode_combo.findData("append" if str(mode).strip().lower() == "append" else "replace")
+        mode_combo.setCurrentIndex(max(0, idx))
+        table.setCellWidget(row, 1, mode_combo)
+        table.setItem(row, 2, QTableWidgetItem(str(from_text)))
+        table.setItem(row, 3, QTableWidgetItem(str(to_text)))
+
+    def _sd_rewrite_remove_selected(self) -> None:
+        table = self.sd_rewrite_table
+        rows = sorted({i.row() for i in table.selectedIndexes()}, reverse=True)
+        for r in rows:
+            table.removeRow(r)
+
+    def _sd_rewrite_set_rows(self, rules: list) -> None:
+        table = self.sd_rewrite_table
+        table.setRowCount(0)
+        for entry in (rules or []):
+            if not isinstance(entry, dict):
+                continue
+            from_text = str(entry.get("from", "")).strip()
+            if not from_text:
+                continue
+            self._sd_rewrite_add_row(
+                mode=str(entry.get("mode", "replace") or "replace"),
+                from_text=from_text,
+                to_text=str(entry.get("to", "") or ""),
+                enabled=bool(entry.get("enabled", True)),
+            )
 
     def _build_conversion_tab(self) -> None:
         tab = QWidget()
@@ -2680,6 +2991,15 @@ class MainWindow(QMainWindow):
         test_row.addWidget(self.chrome_test_btn)
         layout.addLayout(test_row)
 
+        # アストラル界連動: 突入時に開くGrok URL（復帰時は直前のチャットURLへ自動で戻る）
+        astral_row = QHBoxLayout()
+        astral_row.addWidget(QLabel("アストラルGrok URL:"))
+        self.astral_grok_url_edit = QLineEdit()
+        self.astral_grok_url_edit.setPlaceholderText("https://grok.com/c/...（アストラル界突入時に開くチャット）")
+        self.astral_grok_url_edit.textChanged.connect(self._on_any_setting_changed)
+        astral_row.addWidget(self.astral_grok_url_edit, 1)
+        layout.addLayout(astral_row)
+
         # ステータスログ（コピー可能）
         self.chrome_log_text = QPlainTextEdit()
         self.chrome_log_text.setReadOnly(True)
@@ -2695,9 +3015,23 @@ class MainWindow(QMainWindow):
         self._chrome_driver = None
         self._refresh_chrome_profiles()
 
+        # アストラル信号ポーリング（AstralModeが書くファイルを監視してブラウザURLを切替）
+        self._astral_last_seq = None
+        self._astral_last_ts = None
+        self._astral_pending_no_chrome_seq = None
+        self._astral_prev_url = None
+        self._astral_signal_timer = QTimer(self)
+        self._astral_signal_timer.setInterval(400)
+        self._astral_signal_timer.timeout.connect(self._poll_astral_signal)
+        self._astral_signal_timer.start()
+
     def _chrome_log(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.chrome_log_text.appendPlainText(f"[{stamp}] {text}")
+        try:
+            self._gui_log_to_file(f"[chrome] {text}")
+        except Exception:
+            pass
 
     def _refresh_chrome_profiles(self) -> None:
         self.chrome_profile_combo.clear()
@@ -2770,6 +3104,7 @@ class MainWindow(QMainWindow):
             self.chrome_status_label.setText("既存Chrome接続完了（Grokタブなし）")
         else:
             self.chrome_status_label.setText("Chrome起動＋Selenium接続完了（Grokタブなし）")
+        self._poll_astral_signal()
 
     def _on_chrome_tab_error(self, err) -> None:
         self.chrome_status_label.setText(f"起動エラー: {err}")
@@ -2795,6 +3130,142 @@ class MainWindow(QMainWindow):
                 self.chrome_status_label.setText("Grokを開きました")
             except Exception as e:
                 self.chrome_status_label.setText(f"エラー: {e}")
+
+    def _resolve_astral_signal_path(self):
+        """AstralModeが書く astral_signal.json のパスを kks_root から導出する。"""
+        kks_root = self.kks_root_edit.text().strip()
+        if not kks_root:
+            return None
+        try:
+            return Path(kks_root) / "BepInEx" / "plugins" / "AstralMode" / "astral_signal.json"
+        except Exception:
+            return None
+
+    def _poll_astral_signal(self) -> None:
+        """アストラル信号ファイルを監視し、新しいseqの enter/exit でブラウザURLを切替える。"""
+        path = self._resolve_astral_signal_path()
+        if path is None or not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        try:
+            seq = int(data.get("seq", -1))
+        except Exception:
+            return
+        if seq < 0:
+            return
+        try:
+            ts = int(data.get("ts", 0))
+        except Exception:
+            ts = 0
+
+        state = str(data.get("state", "")).strip().lower()
+
+        # GUI起動時点ですでに残っている信号は現在位置として記録するだけ。
+        # 既にアストラル中の状態でGUIを開いただけでは、勝手にAstralURLを開かない。
+        if self._astral_last_seq is None:
+            self._astral_last_seq = seq
+            self._astral_last_ts = ts
+            return
+
+        if state == "enter" and not self._chrome_driver:
+            self._try_connect_chrome_for_astral()
+        if state == "enter" and not self._chrome_driver:
+            pending_key = (seq, ts)
+            if self._astral_pending_no_chrome_seq != pending_key:
+                self._astral_pending_no_chrome_seq = pending_key
+                self._chrome_log(f"アストラル信号(enter)受信: Chrome未接続のため接続後に再試行 seq={seq} ts={ts}")
+            return
+
+        last_ts = int(self._astral_last_ts or 0)
+        if seq <= self._astral_last_seq and ts <= last_ts:
+            return
+        self._astral_last_seq = seq
+        self._astral_last_ts = ts
+        if state == "enter":
+            self._astral_pending_no_chrome_seq = None
+
+        if state == "enter":
+            self._handle_astral_enter()
+        elif state == "exit":
+            self._handle_astral_exit()
+
+    def _try_connect_chrome_for_astral(self) -> None:
+        try:
+            port = self.chrome_port_spin.value()
+        except Exception:
+            port = 9222
+        if not self._is_chrome_debug_running(port):
+            return
+        try:
+            from chrome_debug import get_driver
+
+            self._chrome_driver = get_driver(port=port)
+            self.chrome_close_btn.setEnabled(True)
+            self.chrome_test_btn.setEnabled(True)
+            if self._find_grok_tab():
+                self._chrome_log(f"アストラル信号: 既存Chromeへ接続 port={port}")
+            else:
+                self._chrome_log(f"アストラル信号: 既存Chromeへ接続 port={port}（Grokタブなし）")
+        except Exception as exc:
+            self._chrome_log(f"アストラル信号: 既存Chrome接続失敗 port={port} error={exc}")
+
+    def _handle_astral_enter(self) -> None:
+        astral_url = self.astral_grok_url_edit.text().strip()
+        if not astral_url:
+            self._chrome_log("アストラル信号(enter)受信: アストラルGrok URL未設定のためスキップ")
+            return
+        if not self._chrome_driver:
+            self._chrome_log("アストラル信号(enter)受信: Chrome未接続のためスキップ")
+            return
+        try:
+            self._astral_prev_url = self._chrome_driver.current_url
+        except Exception:
+            self._astral_prev_url = None
+        try:
+            from grok_bridge.browser import open_url_with_confirmed_input
+            from grok_bridge.config import load_or_create_config, resolve_config_path, runtime_base_dir
+
+            base_dir = runtime_base_dir()
+            bridge_config = load_or_create_config(resolve_config_path(base_dir, None))
+            if not self._find_grok_tab():
+                raise RuntimeError("既存Grokタブが見つかりません")
+            current_url = open_url_with_confirmed_input(
+                self._chrome_driver,
+                astral_url,
+                bridge_config.selectors.input,
+                attempts=3,
+                timeout_seconds=15.0,
+                poll_seconds=0.25,
+                fresh_tab=False,
+                log=lambda msg: self._chrome_log(f"アストラル突入: {msg}"),
+            )
+            self._chrome_log(f"アストラル突入成功: {current_url}（復帰先={self._astral_prev_url}）")
+        except Exception as e:
+            current_url = ""
+            try:
+                current_url = self._chrome_driver.current_url
+            except Exception:
+                current_url = ""
+            self._chrome_log(f"アストラル突入の遷移エラー: attempts=3 current_url={current_url or '(empty)'} error={e}")
+
+    def _handle_astral_exit(self) -> None:
+        if not self._chrome_driver:
+            self._chrome_log("アストラル信号(exit)受信: Chrome未接続のためスキップ")
+            return
+        prev = self._astral_prev_url
+        if not prev:
+            self._chrome_log("アストラル信号(exit)受信: 復帰先URL未保持のためスキップ")
+            return
+        try:
+            self._chrome_driver.get(prev)
+            self._chrome_log(f"現実復帰: {prev} へ戻る")
+        except Exception as e:
+            self._chrome_log(f"現実復帰の遷移エラー: {e}")
+        finally:
+            self._astral_prev_url = None
 
     def _build_filter_tab(self) -> None:
         tab = QWidget()
@@ -3371,6 +3842,9 @@ class MainWindow(QMainWindow):
         self.faster_compute_combo.currentTextChanged.connect(self._on_any_setting_changed)
         self.faster_lang_edit.textChanged.connect(self._on_any_setting_changed)
         self.faster_beam_spin.valueChanged.connect(self._on_any_setting_changed)
+        self.fw_backend_combo.currentIndexChanged.connect(self._on_any_setting_changed)
+        self.rtfw_host_edit.textChanged.connect(self._on_any_setting_changed)
+        self.rtfw_port_spin.valueChanged.connect(self._on_any_setting_changed)
         self.pipeline_python_edit.textChanged.connect(self._on_any_setting_changed)
         self.llm_backend_combo.currentTextChanged.connect(self._on_any_setting_changed)
         self.llm_base_url_edit.textChanged.connect(self._on_any_setting_changed)
@@ -3424,6 +3898,7 @@ class MainWindow(QMainWindow):
         self.sd_prompt_token_edit.textChanged.connect(self._on_any_setting_changed)
         self.sd_prompt_timeout_spin.valueChanged.connect(self._on_any_setting_changed)
         self.sd_prompt_forever_chk.toggled.connect(self._on_any_setting_changed)
+        self.sd_preview_auto_show_chk.toggled.connect(self._on_any_setting_changed)
         self.sd_control_port_spin.valueChanged.connect(self._on_any_setting_changed)
         self.sd_slideshow_interval_spin.valueChanged.connect(self._on_any_setting_changed)
         self.sd_prompt_begin_tag_edit.textChanged.connect(self._on_any_setting_changed)
@@ -3991,6 +4466,7 @@ class MainWindow(QMainWindow):
             self.chrome_test_btn.setEnabled(True)
             if status == "launched":
                 self.chrome_launch_btn.setEnabled(False)
+            self._poll_astral_signal()
         else:
             self._append_log("[selenium] プロファイル未選択、スキップ")
         if self._pending_cfg is None:
@@ -4016,6 +4492,8 @@ class MainWindow(QMainWindow):
         self._pipeline_thread.started.connect(self._pipeline_worker.run)
         self._pipeline_worker.log.connect(self._append_log)
         self._pipeline_worker.error.connect(self._on_pipeline_error)
+        self._pipeline_worker.rtfw_status.connect(self._rtfw_controller.update_runtime_status)
+        self._pipeline_worker.sd_preview_image.connect(self._update_sd_preview_from_payload)
         # deleteLaterは使わない — _do_stop()でPython参照をNoneにして回収する
         # (deleteLaterだとC++が先に消えてpause()等でクラッシュする)
         self._pipeline_thread.start()
@@ -4081,6 +4559,8 @@ class MainWindow(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.pause_btn.setText("⏸ 一時停止")
         self._stop_recorder()
+        if hasattr(self, "_rtfw_controller"):
+            self._rtfw_controller.stop()
         if self._pipeline_worker:
             self._pipeline_worker.stop()
         if self._pipeline_thread:

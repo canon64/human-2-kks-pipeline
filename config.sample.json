@@ -23,6 +23,9 @@
   "faster_compute": "int8_float16",
   "faster_language": "ja",
   "faster_beam": 1,
+  "fw_backend": "local",
+  "rtfw_host": "192.168.11.6",
+  "rtfw_port": 8766,
   "pipeline_python": "",
   "llm_backend": "grok_browser",
   "llm_base_url": "http://127.0.0.1:1234/v1",
@@ -73,6 +76,7 @@
   "sd_prompt_token": "",
   "sd_prompt_timeout_sec": 120.0,
   "sd_prompt_generate_forever": false,
+  "sd_preview_auto_show": false,
   "sd_control_port": 18768,
   "sd_slideshow_interval_sec": 20,
   "sd_blankmap_sync_enabled": true,
@@ -131,6 +135,7 @@
   "filter_phrases": [],
   "transcribe_conversion_dict": [],
   "conversion_dict": [],
+  "sd_prompt_rewrite_rules": [],
   "manual_history": [],
   "model_presets": []
 }

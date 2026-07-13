@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import base64
 import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -29,6 +31,29 @@ _SD_PROMPT_RE = re.compile(
 
 _DEFAULT_BEGIN_TAG = "[SD_PROMPT_BEGIN]"
 _DEFAULT_END_TAG = "[SD_PROMPT_END]"
+_COMMON_TAG_PAIRS = (
+    (_DEFAULT_BEGIN_TAG, _DEFAULT_END_TAG),
+    ("[BEGIN]", "[END]"),
+)
+
+
+def _tag_pairs(begin_tag: str, end_tag: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+
+    def add_pair(begin: str, end: str) -> None:
+        b = str(begin or "").strip()
+        e = str(end or "").strip()
+        if not b or not e:
+            return
+        key = (b.lower(), e.lower())
+        if any((existing[0].lower(), existing[1].lower()) == key for existing in pairs):
+            return
+        pairs.append((b, e))
+
+    add_pair(begin_tag or _DEFAULT_BEGIN_TAG, end_tag or _DEFAULT_END_TAG)
+    for common_begin, common_end in _COMMON_TAG_PAIRS:
+        add_pair(common_begin, common_end)
+    return pairs
 
 
 def _build_sd_prompt_re(begin_tag: str, end_tag: str) -> re.Pattern:
@@ -58,6 +83,58 @@ class SdPromptSendResult:
         }
 
 
+def _decode_sd_image_text(raw_image: str) -> bytes:
+    text = str(raw_image or "").strip()
+    if "," in text and text[:32].lower().startswith("data:image"):
+        text = text.split(",", 1)[1]
+    return base64.b64decode(text)
+
+
+def extract_sd_result_images(result: dict[str, Any] | SdPromptSendResult) -> list[bytes]:
+    if isinstance(result, SdPromptSendResult):
+        data: dict[str, Any] = result.to_dict()
+    elif isinstance(result, dict):
+        data = result
+    else:
+        return []
+
+    images: list[bytes] = []
+    body = data.get("body", "")
+    if isinstance(body, str) and body.strip():
+        try:
+            body_data = json.loads(body)
+        except Exception:
+            body_data = {}
+        if isinstance(body_data, dict):
+            raw_images = body_data.get("images")
+            if isinstance(raw_images, list):
+                for raw_image in raw_images:
+                    try:
+                        images.append(_decode_sd_image_text(str(raw_image or "")))
+                    except Exception:
+                        continue
+            saved_images = body_data.get("saved_images")
+            if isinstance(saved_images, list):
+                for saved_path in saved_images:
+                    try:
+                        path = Path(str(saved_path or "")).expanduser()
+                        if path.is_file():
+                            images.append(path.read_bytes())
+                    except Exception:
+                        continue
+
+    saved_images = data.get("saved_images")
+    if isinstance(saved_images, list):
+        for saved_path in saved_images:
+            try:
+                path = Path(str(saved_path or "")).expanduser()
+                if path.is_file():
+                    images.append(path.read_bytes())
+            except Exception:
+                continue
+    return images
+
+
 def append_sd_prompt_instruction(text: str) -> str:
     base = str(text or "").rstrip()
     if not base:
@@ -78,23 +155,72 @@ def extract_sd_prompt_block(
     end_tag: str = _DEFAULT_END_TAG,
 ) -> tuple[str, str]:
     source = str(text or "")
-    begin_tag = str(begin_tag or _DEFAULT_BEGIN_TAG) or _DEFAULT_BEGIN_TAG
-    end_tag = str(end_tag or _DEFAULT_END_TAG) or _DEFAULT_END_TAG
-    pattern = _build_sd_prompt_re(begin_tag, end_tag)
-    matches = list(pattern.finditer(source))
-    if matches:
-        prompts = [m.group(1).strip() for m in matches if m.group(1).strip()]
-        cleaned = pattern.sub("", source).strip()
-        prompt = "\n".join(prompts).strip()
-        return cleaned, prompt
+    prompt_parts: list[str] = []
 
-    begin_match = re.search(re.escape(begin_tag), source, re.IGNORECASE)
-    if not begin_match:
-        return source.strip(), ""
+    for active_begin, active_end in _tag_pairs(begin_tag, end_tag):
+        pattern = _build_sd_prompt_re(active_begin, active_end)
+        matches = list(pattern.finditer(source))
+        if matches:
+            prompt_parts.extend(m.group(1).strip() for m in matches if m.group(1).strip())
+            source = pattern.sub("", source).strip()
+            continue
 
-    cleaned = source[: begin_match.start()].strip()
-    prompt = source[begin_match.end() :].strip()
-    return cleaned, prompt
+        begin_match = re.search(re.escape(active_begin), source, re.IGNORECASE)
+        if begin_match:
+            prompt = source[begin_match.end() :].strip()
+            if prompt:
+                prompt_parts.append(prompt)
+            source = source[: begin_match.start()].strip()
+
+    return source.strip(), "\n".join(part for part in prompt_parts if part).strip()
+
+
+def strip_sd_prompt_blocks_for_kks(
+    text: str,
+    begin_tag: str = _DEFAULT_BEGIN_TAG,
+    end_tag: str = _DEFAULT_END_TAG,
+) -> str:
+    """KKSへ送る会話/字幕からSDプロンプトブロックを丸ごと落とす。"""
+    cleaned, _ = extract_sd_prompt_block(text, begin_tag=begin_tag, end_tag=end_tag)
+    for active_begin, active_end in _tag_pairs(begin_tag, end_tag):
+        cleaned = re.sub(re.escape(active_begin), "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(re.escape(active_end), "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def apply_sd_prompt_rewrite_rules(
+    prompt: str,
+    rules: list[dict[str, Any]] | None,
+) -> str:
+    """AIが出したSDプロンプト本文に、登録順でワード書き換えルールを適用する。
+
+    1ルール = {"enabled": bool, "mode": "replace"|"append", "from": str, "to": str}
+    - enabled=false / from空 はスキップ
+    - replace: from を大小無視で全置換（to はリテラル）
+    - append: from を大小無視で含むなら末尾に ", {to}"（既に含む時は足さない）
+    rules が空/None なら prompt をそのまま返す（＝従来動作）。
+    """
+    text = str(prompt or "")
+    if not rules:
+        return text
+    for entry in rules:
+        if not isinstance(entry, dict):
+            continue
+        if not bool(entry.get("enabled", True)):
+            continue
+        from_str = str(entry.get("from", "") or "")
+        if not from_str:
+            continue
+        to_str = str(entry.get("to", "") or "")
+        mode = str(entry.get("mode", "replace") or "replace").strip().lower()
+        if mode == "append":
+            if re.search(re.escape(from_str), text, re.IGNORECASE):
+                if to_str and to_str.lower() not in text.lower():
+                    joiner = ", " if text.strip() else ""
+                    text = f"{text}{joiner}{to_str}"
+        else:  # replace
+            text = re.sub(re.escape(from_str), lambda _m: to_str, text, flags=re.IGNORECASE)
+    return text
 
 
 def normalize_endpoint(endpoint: str, default: str = "/sdapi/v1/txt2img") -> str:
@@ -129,6 +255,7 @@ def _clean_dict(payload: dict[str, Any]) -> dict[str, Any]:
 def build_a1111_txt2img_payload(
     *,
     prompt: str,
+    prompt_rewrite_rules: list[dict[str, Any]] | None = None,
     append_prompt: str = "",
     negative_prompt: str = "",
     steps: int = 20,
@@ -160,7 +287,7 @@ def build_a1111_txt2img_payload(
     hr_negative_prompt: str = "",
     extra_payload_json: str = "",
 ) -> dict[str, Any]:
-    prompt_text = str(prompt or "").strip()
+    prompt_text = apply_sd_prompt_rewrite_rules(prompt, prompt_rewrite_rules).strip()
     append_text = str(append_prompt or "").strip()
     if append_text:
         joiner = ", " if prompt_text else ""
@@ -360,6 +487,7 @@ def post_a1111_interrupt(
 def send_a1111_txt2img(
     *,
     prompt: str,
+    prompt_rewrite_rules: list[dict[str, Any]] | None = None,
     host: str,
     port: int,
     endpoint: str,
@@ -413,6 +541,7 @@ def send_a1111_txt2img(
 
     payload = build_a1111_txt2img_payload(
         prompt=prompt,
+        prompt_rewrite_rules=prompt_rewrite_rules,
         append_prompt=append_prompt,
         negative_prompt=negative_prompt,
         steps=steps,
@@ -445,7 +574,7 @@ def send_a1111_txt2img(
         extra_payload_json=extra_payload_json,
     )
     return send_sd_prompt(
-        prompt=prompt,
+        prompt=str(payload.get("prompt", prompt) or prompt),
         host=host,
         port=port,
         endpoint=endpoint,

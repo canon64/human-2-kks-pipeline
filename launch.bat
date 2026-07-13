@@ -6,10 +6,13 @@ set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONLEGACYWINDOWSSTDIO=0"
 set "PATH=%~dp0python\cuda_dlls;%PATH%"
-set "_NO_PAUSE=0"
+set "_PAUSE_ON_EXIT=0"
 
 if /I "%~1"=="--no-pause" (
-    set "_NO_PAUSE=1"
+    shift
+)
+if /I "%~1"=="--pause" (
+    set "_PAUSE_ON_EXIT=1"
     shift
 )
 
@@ -33,7 +36,7 @@ if not exist "python\cuda_dlls\cublas64_11.dll" (
 "python\python.exe" "%~dp0main.py" %*
 set "_RC=%ERRORLEVEL%"
 
-if not "%_NO_PAUSE%"=="1" (
+if "%_PAUSE_ON_EXIT%"=="1" (
     if not "%_RC%"=="0" (
         echo.
         echo [ERROR] Exited with error.
